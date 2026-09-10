@@ -1,0 +1,9 @@
+# Node
+node_modules/
+
+# 実行時データ（デモデータは scripts/seed-demo.js で作れる）
+data/purchases.json
+
+# Logs / temp
+*.log
+*.pid

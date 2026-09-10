@@ -1,0 +1,30 @@
+# state/state.yaml — Work Item state SSoT (created by stride_init_feature)
+# profile: synced cache of basic_design.md's basic_design.profile (flat schema).
+# SSoT is basic_design.md side; stride_lint emits PROFILE_MISMATCH on drift.
+
+feature: FEAT-PURCHASEKAIKEI
+current_gate: Final Gate
+mode: standard
+scale: standard
+autonomy_bias: balanced
+profile: enterprise-erp
+
+work_items:
+  - id: WI-PURCHASEKAIKEI-001
+    title: プロジェクト雛形と購買ドメイン層
+    status: done
+  - id: WI-PURCHASEKAIKEI-002
+    title: kaikei-api 連携クライアント
+    status: done
+  - id: WI-PURCHASEKAIKEI-003
+    title: 購買フロー API + 仕訳計上の統合
+    status: done
+  - id: WI-PURCHASEKAIKEI-004
+    title: 会計レポート プロキシ API
+    status: done
+  - id: WI-PURCHASEKAIKEI-005
+    title: フロントエンド UI
+    status: done
+  - id: WI-PURCHASEKAIKEI-006
+    title: テスト
+    status: done

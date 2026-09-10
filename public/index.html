@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>購買会計システム</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛒</text></svg>" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-icon">🛒</span>
+        <div>
+          <h1>購買会計システム</h1>
+          <p class="brand-sub">検収・支払で仕訳を自動計上</p>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button data-view="dashboard" class="active">📊 ダッシュボード</button>
+        <button data-view="new">📝 新規申請</button>
+        <button data-view="list">📋 申請一覧</button>
+        <button data-view="payables">💰 支払予定</button>
+        <button data-view="accounting">📒 会計</button>
+      </nav>
+
+      <div class="actor-box" id="kaikei-status">
+        <div>会計エンジン</div>
+        <div id="kaikei-status-text">● 内蔵（単体完結）</div>
+      </div>
+    </aside>
+
+    <main>
+      <!-- ダッシュボード -->
+      <section class="view" id="view-dashboard">
+        <div class="kpi-row" id="kpi-row">
+          <div class="kpi">
+            <div class="kpi-label">承認待ち</div>
+            <div class="kpi-value" id="kpi-approval">–</div>
+            <div class="kpi-note">件</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">発注済（検収途中含む）</div>
+            <div class="kpi-value" id="kpi-ordered">–</div>
+            <div class="kpi-note">件</div>
+          </div>
+          <div class="kpi kpi-accent">
+            <div class="kpi-label">支払予定（未払い）</div>
+            <div class="kpi-value" id="kpi-payable">–</div>
+            <div class="kpi-note" id="kpi-payable-note">件</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">支払済み累計</div>
+            <div class="kpi-value" id="kpi-paid">–</div>
+            <div class="kpi-note" id="kpi-paid-note">件</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>最新の申請</h2>
+          <div class="table-wrap">
+            <table id="recent-table">
+              <thead>
+                <tr><th>ID</th><th>品目</th><th>金額</th><th>状態</th><th>検収</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 新規申請 -->
+      <section class="view" id="view-new" hidden>
+        <div class="panel" id="form-panel">
+          <h2>購買申請</h2>
+          <form id="purchase-form">
+            <div class="field">
+              <label for="requester">申請者 <span class="req">*</span></label>
+              <input id="requester" name="requester" type="text" required placeholder="例: 山田" />
+            </div>
+            <div class="field">
+              <label for="item">品目 <span class="req">*</span></label>
+              <input id="item" name="item" type="text" required placeholder="例: ノートPC" />
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="qty">数量 <span class="req">*</span></label>
+                <input id="qty" name="qty" type="number" min="1" step="1" required value="1" />
+              </div>
+              <div class="field">
+                <label for="unitPrice">単価 (円) <span class="req">*</span></label>
+                <input id="unitPrice" name="unitPrice" type="number" min="0" step="1" required value="0" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="department">部門 <span class="req">*</span>（仕訳の部門に引き継がれます）</label>
+              <select id="department" name="department">
+                <option value="D10">D10 営業部</option>
+                <option value="D20">D20 開発部</option>
+                <option value="D90" selected>D90 管理部（共通）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="note">備考</label>
+              <input id="note" name="note" type="text" placeholder="任意" />
+            </div>
+            <div class="amount-preview">
+              <span>申請金額</span>
+              <strong id="amount-preview">¥0</strong>
+            </div>
+            <button type="submit" class="btn primary block">申請する</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- 申請一覧 -->
+      <section class="view" id="view-list" hidden>
+        <div class="panel" id="list-panel">
+          <h2>申請一覧</h2>
+          <div id="filter-buttons" class="filters"></div>
+          <div class="table-wrap">
+            <table id="purchase-table">
+              <thead>
+                <tr>
+                  <th>ID</th><th>品目</th><th>数量</th><th>金額</th><th>申請者</th><th>部門</th><th>状態</th><th>検収</th><th>発注番号</th><th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="list-empty" hidden>該当する申請はありません</div>
+          </div>
+        </div>
+
+        <div class="panel" id="detail-panel" hidden>
+          <div class="detail-head">
+            <h2>詳細 <span id="detail-id"></span></h2>
+            <button class="btn ghost" id="detail-close">閉じる</button>
+          </div>
+          <ol class="stepper" id="detail-stepper"></ol>
+          <div id="detail-info" class="detail-info"></div>
+          <div id="detail-actions" class="detail-actions"></div>
+          <h3>履歴</h3>
+          <ul id="detail-history" class="history"></ul>
+        </div>
+      </section>
+
+      <!-- 支払予定 -->
+      <section class="view" id="view-payables" hidden>
+        <div class="panel" id="payables-panel">
+          <h2>支払予定一覧 <span class="hint">支払予定日 = 検収月の翌月末日</span></h2>
+          <div class="table-wrap">
+            <table id="payable-table">
+              <thead>
+                <tr>
+                  <th>支払予定ID</th><th>購買</th><th>品目</th><th>検収数量</th><th>金額</th><th>支払予定日</th><th>状態</th><th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="payables-empty" hidden>支払予定はまだありません</div>
+          </div>
+          <div class="payables-total" id="payables-total" hidden></div>
+        </div>
+      </section>
+
+      <!-- 会計 -->
+      <section class="view" id="view-accounting" hidden>
+        <div class="panel">
+          <h2>残高試算表 <span class="hint">内蔵会計エンジンが計算（残高 0 科目も表示）</span></h2>
+          <div class="field-row">
+            <div class="field">
+              <label for="tb-from">開始日（任意）</label>
+              <input id="tb-from" type="date" />
+            </div>
+            <div class="field">
+              <label for="tb-to">終了日（任意）</label>
+              <input id="tb-to" type="date" />
+            </div>
+            <div class="field">
+              <label for="tb-department">部門（任意）</label>
+              <select id="tb-department">
+                <option value="">全社</option>
+                <option value="D10">D10 営業部</option>
+                <option value="D20">D20 開発部</option>
+                <option value="D90">D90 管理部</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="btn primary" id="tb-refresh">照会</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="trial-balance-table">
+              <thead>
+                <tr><th>科目コード</th><th>科目</th><th>カテゴリ</th><th>借方</th><th>貸方</th><th>残高</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="tb-empty" hidden>表示できるデータがありません（仕訳計上後に照会してください）</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>総勘定元帳 <span class="hint">科目を選んで照会</span></h2>
+          <div class="field-row">
+            <div class="field">
+              <label for="ledger-account">科目</label>
+              <select id="ledger-account"></select>
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="btn primary" id="ledger-refresh">照会</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="ledger-table">
+              <thead>
+                <tr><th>日付</th><th>仕訳</th><th>摘要</th><th>借方</th><th>貸方</th><th>残高</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="ledger-empty" hidden>科目を選んで「照会」を押してください</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 却下モーダル -->
+  <div class="modal-overlay" id="reject-modal" hidden>
+    <div class="modal">
+      <h3>却下する</h3>
+      <p class="modal-target" id="reject-target"></p>
+      <div class="field">
+        <label>却下理由 <span class="req">*</span></label>
+        <textarea id="reject-comment" rows="3" placeholder="例: 予算超過のため"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="reject-cancel">キャンセル</button>
+        <button class="btn danger" id="reject-submit">却下する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 検収モーダル -->
+  <div class="modal-overlay" id="receive-modal" hidden>
+    <div class="modal">
+      <h3>検収登録</h3>
+      <p class="modal-target" id="receive-target"></p>
+      <div class="field-row">
+        <div class="field">
+          <label>検収数量 <span class="req">*</span>（残 <span id="receive-remaining"></span>・分けて登録できます）</label>
+          <input id="receive-qty" type="number" min="1" step="1" value="1" />
+        </div>
+        <div class="field">
+          <label>検収日 <span class="req">*</span>（この日付で仕訳を計上します）</label>
+          <input id="receive-date" type="date" />
+        </div>
+      </div>
+      <div class="field">
+        <label>備考</label>
+        <input id="receive-note" type="text" placeholder="任意" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="receive-cancel">キャンセル</button>
+        <button class="btn primary" id="receive-submit">検収する</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-area" id="toast-area"></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

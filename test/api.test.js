@@ -1,0 +1,212 @@
+'use strict';
+// TS-INT-PURCHASEKAIKEI-001..006 + TS-E2E-PURCHASEKAIKEI-001（v2: 内蔵会計エンジン・外部依存なし）
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { createApp, PurchaseStore } = require('../server');
+
+async function startServer() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-api-'));
+  const app = createApp(new PurchaseStore(dir));
+  const server = app.listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  return { server, base };
+}
+
+function post(base, url, body) {
+  return fetch(`${base}${url}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function createPurchase(base, overrides = {}) {
+  const res = await post(base, '/api/purchases', {
+    item: 'モニタ', qty: 2, unitPrice: 30000, requester: '山田', ...overrides,
+  });
+  assert.equal(res.status, 201);
+  return res.json();
+}
+
+test('TS-INT-001: 申請登録（部門含む）→一覧照会、部門不正は 400', async () => {
+  const { server, base } = await startServer();
+  try {
+    const p = await createPurchase(base, { department: 'D20' });
+    assert.equal(p.status, 'submitted');
+    assert.equal(p.department, 'D20');
+    const def = await createPurchase(base); // 部門未指定
+    assert.equal(def.department, 'D90');
+    const bad = await post(base, '/api/purchases', { item: 'x', qty: 1, unitPrice: 100, requester: '山田', department: 'D99' });
+    assert.equal(bad.status, 400);
+  } finally { server.close(); }
+});
+
+test('TS-INT-002: 承認 / 却下（comment 必須）/ 再申請', async () => {
+  const { server, base } = await startServer();
+  try {
+    const p = await createPurchase(base, { qty: 1, unitPrice: 150000 });
+    const noComment = await post(base, `/api/purchases/${p.id}/reject`, { actor: '鈴木 (部長)' });
+    assert.equal(noComment.status, 400);
+    await post(base, `/api/purchases/${p.id}/reject`, { actor: '鈴木 (部長)', comment: '予算超過' });
+    await post(base, `/api/purchases/${p.id}/resubmit`, { actor: '山田 (申請者)' });
+    const detail = await (await fetch(`${base}/api/purchases/${p.id}`)).json();
+    assert.equal(detail.status, 'submitted');
+    assert.ok(detail.history.some((h) => h.to === 'rejected' && h.comment === '予算超過'));
+    await post(base, `/api/purchases/${p.id}/approve`, { actor: '鈴木 (部長)' });
+    assert.equal((await (await fetch(`${base}/api/purchases/${p.id}`)).json()).status, 'approved');
+  } finally { server.close(); }
+});
+
+test('TS-INT-003: 発注（approved のみ・発注番号採番・他状態は 409）', async () => {
+  const { server, base } = await startServer();
+  try {
+    const p = await createPurchase(base, { qty: 1, unitPrice: 50000 });
+    const early = await post(base, `/api/purchases/${p.id}/order`, { actor: '佐藤 (管理担当)' });
+    assert.equal(early.status, 409);
+    await post(base, `/api/purchases/${p.id}/approve`, { actor: '鈴木 (部長)' });
+    const res = await post(base, `/api/purchases/${p.id}/order`, { actor: '佐藤 (管理担当)' });
+    const ordered = await res.json();
+    assert.equal(ordered.status, 'ordered');
+    assert.match(ordered.orderNo, /^PO-\d{4}-\d{3}$/);
+  } finally { server.close(); }
+});
+
+test('TS-INT-004: 分割検収 → 支払予定計上 + 仕訳自動計上', async () => {
+  const { server, base } = await startServer();
+  try {
+    const p = await createPurchase(base, { item: '業務用プリンタ', qty: 10, unitPrice: 5000, department: 'D10' });
+    await post(base, `/api/purchases/${p.id}/approve`, { actor: '鈴木 (部長)' });
+    await post(base, `/api/purchases/${p.id}/order`, { actor: '佐藤 (管理担当)' });
+
+    const over = await post(base, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 11, receivedAt: '2026-09-10' });
+    assert.equal(over.status, 400);
+
+    const r1 = await post(base, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 4, receivedAt: '2026-09-10' });
+    const after1 = await r1.json();
+    assert.equal(after1.purchase.status, 'ordered');
+    assert.equal(after1.payable.amount, 20000);
+    assert.equal(after1.payable.scheduledDate, '2026-10-31');
+    assert.ok(after1.purchase.journal[0].entryId); // 仕訳が計上され entry id を記録
+
+    const r2 = await post(base, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 6, receivedAt: '2026-09-20' });
+    assert.equal((await r2.json()).purchase.status, 'received');
+
+    const payables = await (await fetch(`${base}/api/payables?status=scheduled`)).json();
+    assert.equal(payables.length, 2);
+  } finally { server.close(); }
+});
+
+test('TS-INT-005: 支払実行 → 仕訳自動計上・entryId 記録・二重支払 409', async () => {
+  const { server, base } = await startServer();
+  try {
+    const p = await createPurchase(base, { qty: 1, unitPrice: 80000, department: 'D90' });
+    await post(base, `/api/purchases/${p.id}/approve`, { actor: '鈴木 (部長)' });
+    await post(base, `/api/purchases/${p.id}/order`, { actor: '佐藤 (管理担当)' });
+    await post(base, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 1, receivedAt: '2026-09-10' });
+
+    const payables = await (await fetch(`${base}/api/payables?status=scheduled`)).json();
+    const pay = await post(base, `/api/payables/${payables[0].id}/pay`, { actor: '佐藤 (管理担当)' });
+    const paid = await pay.json();
+    assert.equal(paid.status, 'paid');
+    assert.equal(paid.entryId, 2); // 検収 #1 → 支払 #2
+
+    const repay = await post(base, `/api/payables/${payables[0].id}/pay`, { actor: '佐藤 (管理担当)' });
+    assert.equal(repay.status, 409); // 2 重支払
+  } finally { server.close(); }
+});
+
+test('TS-INT-006: 会計 API が購買操作を反映する', async () => {
+  const { server, base } = await startServer();
+  try {
+    const p = await createPurchase(base, { item: '開発用サーバー', qty: 5, unitPrice: 40000, department: 'D20' });
+    await post(base, `/api/purchases/${p.id}/approve`, { actor: '鈴木 (部長)' });
+    await post(base, `/api/purchases/${p.id}/order`, { actor: '佐藤 (管理担当)' });
+    await post(base, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 5, receivedAt: '2026-09-10' });
+
+    // 科目一覧（内蔵マスタ 11 科目）
+    const { accounts } = await (await fetch(`${base}/api/accounting/accounts`)).json();
+    assert.equal(accounts.length, 11);
+
+    // 試算表: 仕入高 200,000 / 買掛金 200,000・貸借一致
+    const tb = await (await fetch(`${base}/api/accounting/trial-balance`)).json();
+    assert.equal(tb.rows.length, 11);
+    assert.equal(tb.balanced, true);
+    assert.equal(tb.rows.find((r) => r.account_code === '5110').debit_balance, 200000);
+    assert.equal(tb.rows.find((r) => r.account_code === '2110').credit_balance, 200000);
+
+    // 部門フィルタ: D10（この購買は D20）では仕入高 0
+    const tbD10 = await (await fetch(`${base}/api/accounting/trial-balance?department=D10`)).json();
+    assert.equal(tbD10.rows.find((r) => r.account_code === '5110').debit_balance, 0);
+
+    // 元帳: 購買検収の行がある
+    const led = await (await fetch(`${base}/api/accounting/ledger/5110`)).json();
+    assert.equal(led.rows.length, 1);
+    assert.equal(led.rows[0].description, `購買検収 ${p.id}（開発用サーバー）`);
+    assert.equal(led.rows[0].balance, 200000);
+
+    // 未知科目は 404
+    const missing = await fetch(`${base}/api/accounting/ledger/9999`);
+    assert.equal(missing.status, 404);
+  } finally { server.close(); }
+});
+
+test('TS-E2E-001: 購買会計フロー完走（申請→支払→試算表/元帳照会）', async () => {
+  const { server, base } = await startServer();
+  try {
+    const p = await createPurchase(base, { item: '開発用サーバー', qty: 5, unitPrice: 40000, department: 'D20' });
+    await post(base, `/api/purchases/${p.id}/approve`, { actor: '鈴木 (部長)', comment: '承認' });
+    await post(base, `/api/purchases/${p.id}/order`, { actor: '佐藤 (管理担当)' });
+    await post(base, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 2, receivedAt: '2026-09-10' });
+    await post(base, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 3, receivedAt: '2026-09-25' });
+
+    const detail = await (await fetch(`${base}/api/purchases/${p.id}`)).json();
+    assert.equal(detail.status, 'received');
+    assert.equal(detail.journal.length, 2); // 検収 × 2
+
+    const payables = await (await fetch(`${base}/api/payables`)).json();
+    assert.equal(payables.length, 2);
+    for (const x of payables) {
+      await post(base, `/api/payables/${x.id}/pay`, { actor: '佐藤 (管理担当)' });
+    }
+    const paid = await (await fetch(`${base}/api/payables?status=paid`)).json();
+    assert.equal(paid.length, 2);
+    assert.ok(paid.every((x) => x.entryId)); // 全支払予定に支払仕訳の entry id
+
+    // 会計レポートで全 4 件（検収 2 + 支払 2）を確認
+    const tb = await (await fetch(`${base}/api/accounting/trial-balance`)).json();
+    assert.equal(tb.balanced, true);
+    assert.equal(tb.rows.find((r) => r.account_code === '5110').debit_balance, 200000); // 検収 2+3 = 5 × 40000
+    assert.equal(tb.rows.find((r) => r.account_code === '2110').credit_balance, 0); // 支払で全額消込
+    const led = await (await fetch(`${base}/api/accounting/ledger/2110`)).json();
+    assert.equal(led.rows.length, 4); // 買掛金: 検収 2 + 支払 2
+  } finally { server.close(); }
+});
+
+test('NFR-002: サーバー再起後も purchases + payables + 仕訳台帳が保持される', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-persist-'));
+  const app1 = createApp(new PurchaseStore(dir));
+  const s1 = app1.listen(0);
+  const base1 = `http://127.0.0.1:${s1.address().port}`;
+  const p = await createPurchase(base1, { item: '永続化チェック', qty: 1, unitPrice: 50000 });
+  await post(base1, `/api/purchases/${p.id}/approve`, { actor: '鈴木 (部長)' });
+  await post(base1, `/api/purchases/${p.id}/order`, { actor: '佐藤 (管理担当)' });
+  await post(base1, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 1, receivedAt: '2026-09-10' });
+  await new Promise((r) => s1.close(r));
+
+  const app2 = createApp(new PurchaseStore(dir));
+  const s2 = app2.listen(0);
+  const base2 = `http://127.0.0.1:${s2.address().port}`;
+  try {
+    const detail = await (await fetch(`${base2}/api/purchases/${p.id}`)).json();
+    assert.equal(detail.item, '永続化チェック');
+    assert.equal(detail.status, 'received');
+    assert.equal(detail.journal.length, 1); // 仕訳参照も保持
+    const payables = await (await fetch(`${base2}/api/payables`)).json();
+    assert.equal(payables.length, 1);
+    const tb = await (await fetch(`${base2}/api/accounting/trial-balance`)).json();
+    assert.equal(tb.rows.find((r) => r.account_code === '5110').debit_balance, 50000); // 仕訳台帳も復元
+  } finally { s2.close(); }
+});

@@ -1,0 +1,15 @@
+{
+  "name": "purchase-kaikei",
+  "version": "0.1.0",
+  "private": true,
+  "description": "購買会計システム（研修用）— FEAT-PURCHASEKAIKEI / Tecnos-STRIDE SDD。購買フロー + 内蔵会計エンジンによる仕訳自動計上",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/store.test.js test/api.test.js",
+    "gen:bpmn": "node scripts/gen-bpmn.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
