@@ -17,6 +17,7 @@ function createApp(store) {
     if (err instanceof TransitionError) return res.status(409).json({ error: err.code, message: err.message });
     if (err instanceof ValidationError) return res.status(400).json({ error: err.code, message: err.message });
     if (err.code === 'not_found') return res.status(404).json({ error: err.message });
+    if (err.code === 'kaikei_unavailable') return res.status(502).json({ error: err.code, message: err.message });
     // 最後の安全網: 未分類エラーでも 500 を返してプロセスを生かす（Express 4 は async の
     // 例外を uncaught で落とすため、ここで再 throw しない）
     console.error('unhandled error:', err);
@@ -94,6 +95,19 @@ function createApp(store) {
   app.get('/api/accounting/ledger/:code', (req, res) => {
     try {
       res.json(store.journal.ledger(req.params.code, { from: req.query.from, to: req.query.to }));
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
+  // CT-API-PURCHASEKAIKEI-007: kaikei-api ミラー連携（v3・Outbox）
+  app.get('/api/accounting/sync', (req, res) => {
+    res.json(store.syncStatus());
+  });
+
+  app.post('/api/accounting/sync', async (req, res) => {
+    try {
+      res.json(await store.syncPending());
     } catch (err) {
       handleError(err, res);
     }

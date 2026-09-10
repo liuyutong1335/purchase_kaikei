@@ -167,6 +167,12 @@
 
       <!-- 会計 -->
       <section class="view" id="view-accounting" hidden>
+        <div class="panel" id="sync-panel">
+          <h2>kaikei-api 連携 <span class="hint">オプション — 仕訳をミラー送信（止まっても購買は動く）</span></h2>
+          <div id="sync-status" class="sync-status">状態確認中…</div>
+          <button class="btn primary" id="sync-retry">未同期を再送信</button>
+        </div>
+
         <div class="panel">
           <h2>残高試算表 <span class="hint">内蔵会計エンジンが計算（残高 0 科目も表示）</span></h2>
           <div class="field-row">

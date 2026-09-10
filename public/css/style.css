@@ -460,6 +460,18 @@ th.amount { text-align: right; }
 
 /* ---------- purchase-kaikei 追加分 ---------- */
 
+/* kaikei-api ミラー連携の状態表示 */
+.sync-status {
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+.sync-status.ok { color: var(--ok); font-weight: 600; }
+.sync-status.warn { color: var(--warn); font-weight: 600; }
+
 /* 会計ビュー: 照会条件の入力を横並びに */
 #view-accounting .field-row { align-items: end; }
 #view-accounting .field { flex: 0 0 auto; }

@@ -7,10 +7,28 @@ const os = require('node:os');
 const path = require('node:path');
 const { PurchaseStore, TransitionError, ValidationError, nextMonthEnd } = require('../store/purchase-store');
 const { JournalEngine, ACCOUNTS_MASTER } = require('../store/journal');
+const { KaikeiUnavailableError } = require('../store/kaikei-client');
 
-function freshStore() {
+// モック kaikei クライアント（v3 ミラー連携のテスト用）: fail で障害を再現
+function stubKaikei() {
+  const state = { fail: false };
+  const posted = [];
+  let nextId = 500;
+  return {
+    state,
+    posted,
+    baseUrl: 'http://localhost:8000',
+    postEntry: async (body) => {
+      if (state.fail) throw new KaikeiUnavailableError(new Error('down'));
+      posted.push(body);
+      return { id: nextId++, ...body };
+    },
+  };
+}
+
+function freshStore(kaikei) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-store-'));
-  return new PurchaseStore(dir);
+  return new PurchaseStore(dir, kaikei || stubKaikei());
 }
 
 function orderedPurchase(store, { qty = 10, unitPrice = 1000, department } = {}) {
@@ -210,20 +228,65 @@ test('engine: 部門フィルタ（department 指定はその部門の仕訳の�
   assert.equal(d10.balanced, true); // 部門別でも貸借一致
 });
 
-test('persistence: 再生成後も purchases + payables + entries（仕訳台帳）が保持される (NFR-002)', () => {
+test('persistence: 再生成後も purchases + payables + entries（仕訳台帳）が保持される (NFR-002)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-store-'));
-  const store = new PurchaseStore(dir);
+  const store = new PurchaseStore(dir, stubKaikei());
   const p = store.create({ item: 'モニタ', qty: 2, unitPrice: 30000, requester: '山田', department: 'D10' });
   store.approve(p.id, '鈴木 (部長)', 'OK');
   store.order(p.id, '佐藤 (管理担当)');
   const { payable } = store.receive(p.id, '佐藤 (管理担当)', 2, '2026-09-10');
   store.pay(payable.id, '佐藤 (管理担当)');
+  await store.syncPending(); // ミラー送信を確定的に完了させる
 
-  const reloaded = new PurchaseStore(dir);
+  const reloaded = new PurchaseStore(dir, stubKaikei());
   assert.equal(reloaded.get(p.id).status, 'received');
   assert.equal(reloaded.get(p.id).department, 'D10');
   assert.equal(reloaded.get(p.id).journal.length, 2); // 検収 + 支払の仕訳参照
   assert.equal(reloaded.journal.entries.length, 2); // 仕訳台帳も保持
   const [paidPayable] = reloaded.listPayables('paid');
   assert.equal(paidPayable.entryId, 2);
+});
+
+/* ---------- kaikei-api ミラー連携（v3・Outbox / TS-UNIT-003 相当） ---------- */
+
+test('AC-007-01: 検収・支払の仕訳が kaikei-api にミラー送信され kaikeiEntryId が記録される', async () => {
+  const kaikei = stubKaikei();
+  const store = freshStore(kaikei);
+  const p = orderedPurchase(store, { qty: 5, unitPrice: 1000, department: 'D20' });
+
+  await store.receive(p.id, '佐藤 (管理担当)', 5, '2026-09-10');
+  await store.syncPending();
+
+  assert.equal(kaikei.posted.length, 1);
+  assert.equal(kaikei.posted[0].department, 'D20');
+  assert.deepEqual(kaikei.posted[0].lines, [
+    { account_code: '5110', side: 'debit', amount: 5000 },
+    { account_code: '2110', side: 'credit', amount: 5000 },
+  ]);
+  assert.equal(store.journal.entries[0].kaikeiEntryId, 500);
+  assert.equal(store.syncStatus().pending, 0);
+});
+
+test('AC-007-02: 障害時はキュー保持で購買は止まらず、復帰後の再送で取り込まれる', async () => {
+  const kaikei = stubKaikei();
+  const store = freshStore(kaikei);
+  const p = orderedPurchase(store, { qty: 5, unitPrice: 1000 });
+  kaikei.state.fail = true;
+
+  // 障害中でも検収・支払は普通に成功する（v1 との決定的な違い）
+  const { payable } = store.receive(p.id, '佐藤 (管理担当)', 5, '2026-09-10');
+  store.pay(payable.id, '佐藤 (管理担当)');
+  assert.equal(store.get(p.id).status, 'received');
+  assert.equal(store.syncStatus().pending, 2); // 2 件がキューに保持
+
+  await store.syncPending(); // 障害中の再送 → 減らない
+  assert.equal(store.syncStatus().pending, 2);
+  assert.equal(kaikei.posted.length, 0);
+
+  kaikei.state.fail = false; // 復帰
+  const r = await store.syncPending();
+  assert.equal(r.sent, 2);
+  assert.equal(store.syncStatus().pending, 0);
+  assert.equal(store.journal.entries[0].kaikeiEntryId, 500);
+  assert.equal(store.journal.entries[1].kaikeiEntryId, 501);
 });

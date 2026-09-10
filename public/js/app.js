@@ -413,6 +413,7 @@ $('#purchase-form').addEventListener('submit', async (e) => {
 let accountsCache = null;
 
 async function initAccountingView() {
+  refreshSyncStatus();
   try {
     const { accounts } = await api('/api/accounting/accounts');
     accountsCache = accounts;
@@ -424,7 +425,6 @@ async function initAccountingView() {
       opt.textContent = `${a.code} ${a.name}`;
       sel.appendChild(opt);
     }
-    setKaikeiStatus(true);
     await Promise.all([renderTrialBalance(), renderLedger()]);
   } catch (err) {
     setKaikeiStatus(false, err.message);
@@ -511,6 +511,45 @@ async function renderLedger() {
 
 $('#tb-refresh').addEventListener('click', renderTrialBalance);
 $('#ledger-refresh').addEventListener('click', renderLedger);
+
+/* ---------- kaikei-api ミラー連携（v3・Outbox） ---------- */
+
+function renderSyncStatus(s) {
+  const el = $('#sync-status');
+  if (!s.pending && !s.lastError) {
+    el.textContent = '● 同期済み — 未同期の仕訳はありません';
+    el.className = 'sync-status ok';
+  } else if (s.pending && !s.lastError) {
+    el.textContent = `● 未同期 ${s.pending} 件 — kaikei-api（${s.url}）が届きません。起動すると自動で再送します`;
+    el.className = 'sync-status warn';
+  } else if (s.pending && s.lastError) {
+    el.textContent = `● 未同期 ${s.pending} 件 — 直近エラー: ${s.lastError.message}`;
+    el.className = 'sync-status warn';
+  } else {
+    el.textContent = `● 直近エラー: ${s.lastError.message}`;
+    el.className = 'sync-status warn';
+  }
+}
+
+async function refreshSyncStatus() {
+  try {
+    renderSyncStatus(await api('/api/accounting/sync'));
+  } catch (err) {
+    const el = $('#sync-status');
+    el.textContent = `状態の取得に失敗: ${err.message}`;
+    el.className = 'sync-status warn';
+  }
+}
+
+$('#sync-retry').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/accounting/sync', { method: 'POST', body: JSON.stringify({}) });
+    toast(`ミラー送信: ${r.sent} 件送信・未同期 ${r.remaining} 件`, r.remaining === 0);
+    await refreshSyncStatus();
+  } catch (err) {
+    toast(`再送に失敗: ${err.message}`, false);
+  }
+});
 
 /* ---------- イベント ---------- */
 

@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { JournalEngine } = require('./journal');
+const { KaikeiClient } = require('./kaikei-client');
 
 const STATUSES = ['submitted', 'approved', 'rejected', 'ordered', 'received'];
 const DEPARTMENTS = ['D10', 'D20', 'D90'];
@@ -42,13 +43,18 @@ function nextMonthEnd(dateStr) {
 }
 
 class PurchaseStore {
-  constructor(dataDir) {
+  // kaikei: kaikei-api ミラー送信用クライアント（省略時は本物・テストではスタブを注入）。
+  // v3: 連携は Outbox 方式 — 仕訳は常に内蔵エンジンで即計上し、kaikei-api へは
+  // 後からミラー送信する。失敗しても購買操作は止まらず、キューに溜めて再送する。
+  constructor(dataDir, kaikei) {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, 'purchases.json');
+    this.kaikei = kaikei || new KaikeiClient();
     this.data = this.#load();
     // 内蔵会計エンジン（entries 配列・counters を store と共有）
     this.journal = new JournalEngine(this.data.entries);
     this.journal.counters = this.data.counters;
+    this._syncing = false; // ミラー送信の多重実行防止
   }
 
   #load() {
@@ -56,10 +62,11 @@ class PurchaseStore {
       const data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       if (!Array.isArray(data.entries)) data.entries = []; // v1 からの移行
       if (data.counters.entry == null) data.counters.entry = 0;
+      if (!Array.isArray(data.pendingLinks)) data.pendingLinks = []; // v3: 未同期キュー
       return data;
     } catch {
       // 初回起動時はファイルが無い
-      return { purchases: [], payables: [], entries: [], counters: { purchase: 0, order: 0, payable: 0, entry: 0 } };
+      return { purchases: [], payables: [], entries: [], pendingLinks: [], counters: { purchase: 0, order: 0, payable: 0, entry: 0 } };
     }
   }
 
@@ -250,6 +257,8 @@ class PurchaseStore {
     };
     this.data.payables.push(payable);
     this.#save();
+    this.#enqueueLink(entry);
+    this.#trySyncPending().catch(() => {}); // ベストエフォート（失敗はキューに残る）
     return { purchase, payable };
   }
 
@@ -287,7 +296,72 @@ class PurchaseStore {
       purchase.journal.push({ kind: 'pay', entryId: entry.id, payableId: payable.id, amount: payable.amount, date: now().slice(0, 10) });
     }
     this.#save();
+    this.#enqueueLink(entry);
+    this.#trySyncPending().catch(() => {}); // ベストエフォート
     return payable;
+  }
+
+  /* ---------- kaikei-api ミラー連携（v3・Outbox 方式） ---------- */
+
+  // 仕訳をミラー送信キューに入れる（payload は kaikei-api 契約 §3 の形式そのまま）
+  #enqueueLink(entry) {
+    this.data.pendingLinks.push({
+      localEntryId: entry.id,
+      payload: {
+        date: entry.date,
+        description: entry.description,
+        department: entry.department,
+        lines: entry.lines.map((l) => ({ account_code: l.account_code, side: l.side, amount: l.amount })),
+      },
+    });
+    this.#save();
+  }
+
+  // キュー内の未送信仕訳を kaikei-api へ送る。1 件でも接続不可なら残りを残して中断。
+  // 成功した仕訳には kaikeiEntryId（向こう側の採番 id）を記録する。
+  async syncPending() {
+    if (this._syncing) return this.syncStatus();
+    this._syncing = true;
+    try {
+      let sent = 0;
+      while (this.data.pendingLinks.length > 0) {
+        const job = this.data.pendingLinks[0];
+        try {
+          const remote = await this.kaikei.postEntry(job.payload);
+          const entry = this.data.entries.find((e) => e.id === job.localEntryId);
+          if (entry) entry.kaikeiEntryId = remote.id;
+          this.data.pendingLinks.shift();
+          sent += 1;
+        } catch (err) {
+          if (err.code === 'kaikei_unavailable') break; // 相手が居ない → 後で再送
+          // kaikei 側の業務エラー（未知科目など）は再送しても届かないので破棄して記録
+          this.data.pendingLinks.shift();
+          this.data.lastLinkError = { at: now(), localEntryId: job.localEntryId, message: err.message };
+        }
+      }
+      this.#save();
+      return { sent, remaining: this.data.pendingLinks.length, ...this.syncStatus() };
+    } finally {
+      this._syncing = false;
+    }
+  }
+
+  syncStatus() {
+    return {
+      enabled: true,
+      url: this.kaikei.baseUrl,
+      pending: this.data.pendingLinks.length,
+      lastError: this.data.lastLinkError || null,
+    };
+  }
+
+  // 操作のたびにベストエフォートで送る（失敗は握りつぶし・キューに残す）
+  async #trySyncPending() {
+    try {
+      await this.syncPending();
+    } catch (err) {
+      this.data.lastLinkError = { at: now(), message: err.message };
+    }
   }
 }
 

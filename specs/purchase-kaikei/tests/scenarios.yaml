@@ -82,6 +82,16 @@ scenarios:
     expected:
       - 試算表は 11 科目すべて（残高 0 含む）・貸借一致
       - 元帳に購買検収・購買支払の行がある
+  - id: TS-INT-PURCHASEKAIKEI-007
+    title: ミラー連携（Outbox）— 成功・障害・再送
+    layer: integration
+    spec_refs: [AC-US-PURCHASEKAIKEI-007-01, AC-US-PURCHASEKAIKEI-007-02]
+    given: 検収・支払を行った購買データ
+    when: kaikei-api が稼働中 / 停止 / 復帰の各状態で同期する
+    then: 稼働中は自動ミラー・停止中はキュー保持で操作可能・復帰後は再送で取り込まれる
+    expected:
+      - 同期済み仕訳に kaikeiEntryId が記録される
+      - 未同期件数が status/sync API で見える
   - id: TS-E2E-PURCHASEKAIKEI-001
     title: 購買会計フロー完走（クリティカルジャーニー）
     layer: e2e
