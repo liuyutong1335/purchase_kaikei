@@ -44,3 +44,13 @@ v4 の変更は 2026-09-11 のセッションで SDD フローに先立って実
 - 成果物: spec.md v4 / basic_design.md v3 / plan.md v3 / tasks.md（WI-007〜009 追加）
 - 承認: APPROVAL.md に v4 Final Gate 追記（HUMAN-ONLY・ユーザー本人が編集）
 - セッションログ: products/session-logs/2026-09-11-purchase-kaikei.md
+
+## 補足: SQLite × DuckDB の使い分け（README「データベース構成」節に詳述）
+
+v4 で 2 種類の DB が並ぶことになったため、ユーザーの質問「不能都用一个吗」に答える
+形で README に「データベース構成」節を新設（2026-09-11）:
+
+- purchase-kaikei = SQLite（購買業務の正本・OLTP）/ kanri-dwh = DuckDB（分析 DWH・ETL バッチ）
+- 1 つにまとめない理由: ① 書き込みパターンが逆（逐筆トランザクション vs 大量集計）
+  ② 台帳が独立しているからこそ突合（reconcile）に意味がある（公式台帳を正とする）
+  ③ 現実の会社構造（部門システム → 総帳 → 経営 DWH）と同じで、システム間連携こそ研修の主題
