@@ -1,11 +1,14 @@
 'use strict';
-// CMP-PURCHASEKAIKEI-002: ドメイン層 — JSON 永続化・状態遷移ガード・履歴記録・発注番号採番
+// CMP-PURCHASEKAIKEI-002: ドメイン層 — SQLite 永続化・状態遷移ガード・履歴記録・発注番号採番
 // v2: 内蔵会計エンジン（store/journal.js）で仕訳を自動計上。外部 API 依存なし。
 //   検収 → 仕訳（借: 仕入高 5110 / 貸: 買掛金 2110）
 //   支払 → 仕訳（借: 買掛金 2110 / 貸: 普通預金 1120）
-// 仕訳は購買データと同じ JSON・同じ書き込み時に保存されるため、常に整合する。
+// v4: 永続化を JSON ファイルから SQLite（node:sqlite・依存追加なし）に変更。
+// 購買・支払予定・仕訳台帳・Outbox キューを同一トランザクションで書き込むため常に整合する。
+// 旧 purchases.json がある場合は初回起動時に自動取り込み（移行）する。
 const fs = require('fs');
 const path = require('path');
+const { DatabaseSync } = require('node:sqlite');
 const { JournalEngine } = require('./journal');
 const { KaikeiClient } = require('./kaikei-client');
 
@@ -48,13 +51,213 @@ class PurchaseStore {
   // 後からミラー送信する。失敗しても購買操作は止まらず、キューに溜めて再送する。
   constructor(dataDir, kaikei) {
     this.dataDir = dataDir;
-    this.file = path.join(dataDir, 'purchases.json');
+    this.dbFile = path.join(dataDir, 'purchase-kaikei.db');
     this.kaikei = kaikei || new KaikeiClient();
-    this.data = this.#load();
+    this.db = this.#open();
+    this.data = this.#hydrate();
+    this.#migrateJsonIfFresh();
     // 内蔵会計エンジン（entries 配列・counters を store と共有）
     this.journal = new JournalEngine(this.data.entries);
     this.journal.counters = this.data.counters;
     this._syncing = false; // ミラー送信の多重実行防止
+  }
+
+  /* ---------- SQLite 永続化（v4） ---------- */
+
+  #open() {
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    const db = new DatabaseSync(this.dbFile);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS counters (
+        name  TEXT PRIMARY KEY,
+        value INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS purchases (
+        id             TEXT PRIMARY KEY,
+        item           TEXT    NOT NULL,
+        qty            INTEGER NOT NULL,
+        unit_price     REAL    NOT NULL,
+        amount         REAL    NOT NULL,
+        requester      TEXT    NOT NULL,
+        department     TEXT    NOT NULL,
+        note           TEXT    NOT NULL DEFAULT '',
+        status         TEXT    NOT NULL,
+        order_no       TEXT,
+        received_total INTEGER NOT NULL DEFAULT 0,
+        journal        TEXT    NOT NULL DEFAULT '[]', -- 仕訳参照（JSON）: NFR-003
+        history        TEXT    NOT NULL DEFAULT '[]', -- 遷移履歴（JSON）
+        created_at     TEXT    NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS payables (
+        id             TEXT PRIMARY KEY,
+        purchase_id    TEXT    NOT NULL,
+        purchase_item  TEXT    NOT NULL,
+        department     TEXT    NOT NULL,
+        received_qty   INTEGER NOT NULL,
+        amount         INTEGER NOT NULL,
+        scheduled_date TEXT    NOT NULL,
+        status         TEXT    NOT NULL,
+        entry_id       INTEGER,                      -- 支払仕訳の entry id（AC-005-03）
+        created_at     TEXT    NOT NULL,
+        paid_at        TEXT
+      );
+      CREATE TABLE IF NOT EXISTS journal_entries (
+        id              INTEGER PRIMARY KEY,
+        date            TEXT NOT NULL,
+        description     TEXT NOT NULL,
+        department      TEXT NOT NULL,
+        kaikei_entry_id INTEGER,                     -- ミラー送信済みの kaikei-api 側 id
+        created_at      TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS journal_lines (
+        entry_id     INTEGER NOT NULL REFERENCES journal_entries (id),
+        seq          INTEGER NOT NULL,
+        account_code TEXT    NOT NULL,
+        side         TEXT    NOT NULL,
+        amount       INTEGER NOT NULL,
+        PRIMARY KEY (entry_id, seq)
+      );
+      CREATE TABLE IF NOT EXISTS pending_links (
+        seq            INTEGER PRIMARY KEY,          -- Outbox: 送信順を保持
+        local_entry_id INTEGER NOT NULL,
+        payload        TEXT    NOT NULL              -- kaikei-api 契約 §3 の形式（JSON）
+      );
+      CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+      );
+    `);
+    return db;
+  }
+
+  // DB → メモリ（this.data）。形状は v3 までの JSON と同じ（既存テスト・ビュー互換）
+  #hydrate() {
+    const counters = { purchase: 0, order: 0, payable: 0, entry: 0 };
+    for (const row of this.db.prepare('SELECT name, value FROM counters').all()) {
+      counters[row.name] = Number(row.value);
+    }
+    const purchases = this.db.prepare('SELECT * FROM purchases ORDER BY created_at, id').all().map((r) => ({
+      id: r.id,
+      item: r.item,
+      qty: Number(r.qty),
+      unitPrice: Number(r.unit_price),
+      amount: Number(r.amount),
+      requester: r.requester,
+      department: r.department,
+      note: r.note,
+      status: r.status,
+      orderNo: r.order_no,
+      receivedTotal: Number(r.received_total),
+      journal: JSON.parse(r.journal),
+      history: JSON.parse(r.history),
+      createdAt: r.created_at,
+    }));
+    const payables = this.db.prepare('SELECT * FROM payables ORDER BY created_at, id').all().map((r) => ({
+      id: r.id,
+      purchaseId: r.purchase_id,
+      purchaseItem: r.purchase_item,
+      department: r.department,
+      receivedQty: Number(r.received_qty),
+      amount: Number(r.amount),
+      scheduledDate: r.scheduled_date,
+      status: r.status,
+      entryId: r.entry_id == null ? null : Number(r.entry_id),
+      createdAt: r.created_at,
+      paidAt: r.paid_at,
+    }));
+    const linesByEntry = new Map();
+    for (const l of this.db.prepare('SELECT entry_id, seq, account_code, side, amount FROM journal_lines ORDER BY entry_id, seq').all()) {
+      if (!linesByEntry.has(l.entry_id)) linesByEntry.set(l.entry_id, []);
+      linesByEntry.get(l.entry_id).push({ account_code: l.account_code, side: l.side, amount: Number(l.amount) });
+    }
+    const entries = this.db.prepare('SELECT * FROM journal_entries ORDER BY id').all().map((r) => ({
+      id: Number(r.id),
+      date: r.date,
+      description: r.description,
+      department: r.department,
+      ...(r.kaikei_entry_id == null ? {} : { kaikeiEntryId: Number(r.kaikei_entry_id) }),
+      lines: linesByEntry.get(r.id) || [],
+      createdAt: r.created_at,
+    }));
+    const pendingLinks = this.db.prepare('SELECT local_entry_id, payload FROM pending_links ORDER BY seq').all()
+      .map((r) => ({ localEntryId: Number(r.local_entry_id), payload: JSON.parse(r.payload) }));
+    const data = { purchases, payables, entries, pendingLinks, counters };
+    const lastLinkError = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('lastLinkError');
+    if (lastLinkError && lastLinkError.value != null) data.lastLinkError = JSON.parse(lastLinkError.value);
+    return data;
+  }
+
+  // メモリ → DB。購買・支払予定・仕訳台帳・Outbox キューを 1 トランザクションで書き込む
+  // （v2 までの「同じ書き込み時に保存」の整合性保証を SQLite にそのまま持ち込む）
+  #save() {
+    const d = this.data;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const putCounter = this.db.prepare('INSERT OR REPLACE INTO counters (name, value) VALUES (?, ?)');
+      for (const [name, value] of Object.entries(d.counters)) putCounter.run(name, value);
+
+      const putPurchase = this.db.prepare(`INSERT OR REPLACE INTO purchases
+        (id, item, qty, unit_price, amount, requester, department, note, status, order_no, received_total, journal, history, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const p of d.purchases) {
+        putPurchase.run(p.id, p.item, p.qty, p.unitPrice, p.amount, p.requester, p.department, p.note,
+          p.status, p.orderNo, p.receivedTotal, JSON.stringify(p.journal), JSON.stringify(p.history), p.createdAt);
+      }
+
+      const putPayable = this.db.prepare(`INSERT OR REPLACE INTO payables
+        (id, purchase_id, purchase_item, department, received_qty, amount, scheduled_date, status, entry_id, created_at, paid_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const y of d.payables) {
+        putPayable.run(y.id, y.purchaseId, y.purchaseItem, y.department, y.receivedQty, y.amount,
+          y.scheduledDate, y.status, y.entryId, y.createdAt, y.paidAt);
+      }
+
+      const putEntry = this.db.prepare(`INSERT OR REPLACE INTO journal_entries
+        (id, date, description, department, kaikei_entry_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`);
+      const putLine = this.db.prepare('INSERT OR REPLACE INTO journal_lines (entry_id, seq, account_code, side, amount) VALUES (?, ?, ?, ?, ?)');
+      for (const e of d.entries) {
+        putEntry.run(e.id, e.date, e.description, e.department, e.kaikeiEntryId ?? null, e.createdAt);
+        for (const [seq, l] of e.lines.entries()) putLine.run(e.id, seq, l.account_code, l.side, l.amount);
+      }
+
+      // Outbox キューは順序ごと差し替え（shift で先頭を消すため）
+      this.db.prepare('DELETE FROM pending_links').run();
+      const putLink = this.db.prepare('INSERT INTO pending_links (seq, local_entry_id, payload) VALUES (?, ?, ?)');
+      for (const [seq, job] of d.pendingLinks.entries()) putLink.run(seq, job.localEntryId, JSON.stringify(job.payload));
+
+      this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+        .run('lastLinkError', d.lastLinkError ? JSON.stringify(d.lastLinkError) : null);
+
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  // v3 以前の purchases.json → SQLite の 1 回だけの移行（DB が空のときだけ）
+  #migrateJsonIfFresh() {
+    if (this.data.purchases.length > 0 || this.data.entries.length > 0) return;
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(path.join(this.dataDir, 'purchases.json'), 'utf8'));
+    } catch {
+      return; // 初回起動時はファイルが無い
+    }
+    if (!Array.isArray(data.purchases)) return;
+    if (!Array.isArray(data.entries)) data.entries = []; // v1 からの移行
+    if (!Array.isArray(data.pendingLinks)) data.pendingLinks = []; // v3: 未同期キュー
+    if (!data.counters || data.counters.entry == null) data.counters = { purchase: 0, order: 0, payable: 0, entry: 0 };
+    this.data = {
+      purchases: data.purchases,
+      payables: Array.isArray(data.payables) ? data.payables : [],
+      entries: data.entries,
+      pendingLinks: data.pendingLinks,
+      counters: data.counters,
+      ...(data.lastLinkError ? { lastLinkError: data.lastLinkError } : {}),
+    };
+    this.#save();
+    console.error(`purchases.json から SQLite (${path.basename(this.dbFile)}) への移行が完了しました`);
   }
 
   #load() {
@@ -68,11 +271,6 @@ class PurchaseStore {
       // 初回起動時はファイルが無い
       return { purchases: [], payables: [], entries: [], pendingLinks: [], counters: { purchase: 0, order: 0, payable: 0, entry: 0 } };
     }
-  }
-
-  #save() {
-    fs.mkdirSync(this.dataDir, { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2), 'utf8');
   }
 
   create({ item, qty, unitPrice, requester, department, note }) {

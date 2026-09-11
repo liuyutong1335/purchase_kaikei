@@ -7,3 +7,5 @@ data/purchases.json
 # Logs / temp
 *.log
 *.pid
+data/purchase-kaikei.db
+data/purchase-kaikei.db-journal
