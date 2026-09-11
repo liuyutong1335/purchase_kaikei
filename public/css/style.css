@@ -3,10 +3,10 @@
   --bg: #f7f8fa;
   --panel: #ffffff;
   --surface-2: #f1f4f9;
-  --navy-900: #0b1e3d; /* サイドバー */
+  --navy-900: #0b1e3d;
   --navy-800: #10264c;
-  --primary: #1e3a8a;
-  --primary-dark: #16295e;
+  --primary: #0b1e3d;      /* サイドバーと同じ深紺に統一 */
+  --primary-dark: #071630;
   --primary-soft: #eaf0fa;
   --text: #1d2534;
   --muted: #6e7787;
@@ -42,7 +42,7 @@ body {
 .sidebar {
   width: 200px;
   flex-shrink: 0;
-  background: var(--navy-900);
+  background: var(--primary);
   color: #fff;
   display: flex;
   flex-direction: column;
