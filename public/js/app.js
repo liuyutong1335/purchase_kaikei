@@ -588,11 +588,11 @@ function fillTable(tbodySel, emptySel, rows, html) {
   const tbody = $(tbodySel);
   tbody.innerHTML = '';
   $(emptySel).hidden = rows.length > 0;
-  for (const r of rows) {
+  rows.forEach((r, i) => {
     const tr = document.createElement('tr');
-    tr.innerHTML = html(r);
+    tr.innerHTML = html(r, i, rows);
     tbody.appendChild(tr);
-  }
+  });
 }
 
 async function initManagementView() {
@@ -600,13 +600,18 @@ async function initManagementView() {
   try {
     rec = await api('/api/management/kpi/reconcile');
   } catch (err) {
-    setKanriStatus(false, '● kanri-dwh（管理会計 DWH・port 8100）に接続できません — 起動すると KPI を表示します');
+    setKanriStatus(false, '● 管理会計 DWH（kanri-dwh・port 8100）に接続できません — 起動するとこの画面の数字が動きます');
     setMgmtTablesError('kanri-dwh に接続できません');
+    $('#mkpi-profit').textContent = '–';
+    $('#mkpi-cash').textContent = '–';
+    $('#mkpi-reconcile').textContent = '不明';
     return;
   }
   setKanriStatus(rec.matched, rec.matched
     ? '● 突合OK — DWH と源泉（kaikei-api）の仕訳が一致しています'
-    : '● 突合不一致 — 取込（ETL）をやり直してください');
+    : '● 突合不一致 — 下の「データ連携」で取込（ETL）をやり直してください');
+  $('#mkpi-reconcile').textContent = rec.matched ? '✔ 一致' : '✖ 不一致';
+  $('#mkpi-reconcile').style.color = rec.matched ? '' : 'var(--danger)';
   await renderManagement();
 }
 
@@ -623,42 +628,57 @@ async function renderManagement() {
       api(`/api/management/kpi/cash-trend${q}`),
     ]);
 
-    // 部門別損益
+    // KPI カード（経営サマリ）
+    const totalProfit = pl.rows.reduce((s, r) => s + r.profit, 0);
+    const profitEl = $('#mkpi-profit');
+    profitEl.textContent = `${totalProfit < 0 ? '−' : ''}${yen(Math.abs(totalProfit))}`;
+    profitEl.style.color = totalProfit < 0 ? 'var(--danger)' : '';
+
+    const lastCash = cash.rows[cash.rows.length - 1];
+    $('#mkpi-cash').textContent = lastCash ? yen(lastCash.total) : '–';
+    $('#mkpi-cash-note').textContent = lastCash ? `現金 + 普通預金（${lastCash.month} 月末）` : '現金 + 普通預金';
+
+    // 部門別損益（損益の絶対値バーは数字の下に置く — 独立列は狭い画面であふれるため）
+    const profitMax = Math.max(0, ...pl.rows.map((r) => Math.abs(r.profit)));
     fillTable('#pl-table', '#pl-empty', pl.rows, (r) => `
       <td>${r.department} ${r.name}</td>
       <td class="amount">${yen(r.revenue)}</td>
       <td class="amount">${yen(r.expense)}</td>
-      <td class="amount" style="font-weight:600; color:${r.profit < 0 ? 'var(--danger)' : 'var(--text)'}">${yen(r.profit)}</td>
+      <td class="amount" style="font-weight:600; color:${r.profit < 0 ? 'var(--danger)' : 'var(--text)'}">
+        ${r.profit < 0 ? '−' : ''}${yen(Math.abs(r.profit))}
+        <div class="bar ${r.profit < 0 ? 'neg' : ''}" style="width:110px"><span style="width:${profitMax ? Math.max(2, Math.round((Math.abs(r.profit) / profitMax) * 100)) : 0}%"></span></div>
+      </td>
     `);
 
-    // 月別売上（月 × 部門の行を月で合算）
-    const byMonth = new Map();
-    for (const r of sales.rows) byMonth.set(r.month, (byMonth.get(r.month) || 0) + r.revenue);
-    const months = [...byMonth.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
-    const salesMax = Math.max(0, ...months.map(([, v]) => v));
-    fillTable('#sales-table', '#sales-empty', months, ([m, v]) => `
-      <td>${m}</td>
-      <td class="amount">${yen(v)}</td>
-      <td style="width:40%">${bar(v, salesMax)}</td>
+    // 資金の推移（月末残高。直近月を太らせる）
+    const cashMax = Math.max(0, ...cash.rows.map((r) => r.total));
+    fillTable('#cash-table', '#cash-empty', cash.rows, (r, i, arr) => `
+      <td>${r.month}${i === arr.length - 1 ? ' <span class="tag-latest">直近</span>' : ''}</td>
+      <td class="amount">${yen(r.cash)}</td>
+      <td class="amount">${yen(r.deposit)}</td>
+      <td class="amount" style="font-weight:${i === arr.length - 1 ? 600 : 400}">${yen(r.total)}</td>
+      <td style="width:30%">${bar(r.total, cashMax)}</td>
     `);
 
-    // 科目別費用
-    const expenseMax = Math.max(0, ...expense.rows.map((r) => r.expense));
+    // 費用の内訳（多い順に並べ替え）
+    const expenseRows = [...expense.rows].sort((a, b) => b.expense - a.expense);
+    const expenseMax = Math.max(0, ...expenseRows.map((r) => r.expense));
     $('#expense-total').textContent = expense.total ? `合計 ${yen(expense.total)}` : '';
-    fillTable('#expense-table', '#expense-empty', expense.rows, (r) => `
+    fillTable('#expense-table', '#expense-empty', expenseRows, (r) => `
       <td>${r.account_code} ${r.name}</td>
       <td class="amount">${yen(r.expense)}</td>
       <td style="width:40%">${bar(r.expense, expenseMax)}</td>
     `);
 
-    // 資金推移
-    const cashMax = Math.max(0, ...cash.rows.map((r) => r.total));
-    fillTable('#cash-table', '#cash-empty', cash.rows, (r) => `
-      <td>${r.month}</td>
-      <td class="amount">${yen(r.cash)}</td>
-      <td class="amount">${yen(r.deposit)}</td>
-      <td class="amount" style="font-weight:600">${yen(r.total)}</td>
-      <td style="width:40%">${bar(r.total, cashMax)}</td>
+    // 月別売上（仕訳のない月は見せない — 0 円の並びは情報ではないため）
+    const byMonth = new Map();
+    for (const r of sales.rows) byMonth.set(r.month, (byMonth.get(r.month) || 0) + r.revenue);
+    const months = [...byMonth.entries()].filter(([, v]) => v > 0).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    const salesMax = Math.max(0, ...months.map(([, v]) => v));
+    fillTable('#sales-table', '#sales-empty', months, ([m, v]) => `
+      <td>${m}</td>
+      <td class="amount">${yen(v)}</td>
+      <td style="width:40%">${bar(v, salesMax)}</td>
     `);
   } catch (err) {
     setMgmtTablesError(`KPI の取得に失敗: ${err.message}`);
