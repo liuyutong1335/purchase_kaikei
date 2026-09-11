@@ -12,8 +12,8 @@ feature_name: "purchase-kaikei"
 ```yaml
 plan:
   feature_id: FEAT-PURCHASEKAIKEI
-  version: 3
-  architecture: 3-layer + built-in accounting engine + SQLite persistence + Outbox mirror (kaikei-api) + kanri-dwh KPI proxy
+  version: 4
+  architecture: 3-layer + built-in accounting engine + PostgreSQL (1 server 3 databases) + Outbox mirror (kaikei-api) + kanri-dwh KPI proxy
   components:
     - CMP-PURCHASEKAIKEI-001
     - CMP-PURCHASEKAIKEI-002
@@ -21,8 +21,10 @@ plan:
     - CMP-PURCHASEKAIKEI-004
     - CMP-PURCHASEKAIKEI-006
     - CMP-PURCHASEKAIKEI-007
+    - CMP-PURCHASEKAIKEI-008
   libraries:
     - LIB-PURCHASEKAIKEI-001
+    - LIB-PURCHASEKAIKEI-002
   contracts:
     - CT-API-PURCHASEKAIKEI-001
     - CT-API-PURCHASEKAIKEI-002
@@ -37,27 +39,46 @@ plan:
 
 ## Architecture
 
-**v4: 3 システム連携 + SQLite。** purchase-management（Node.js + Express）を土台に、会計エンジンを**内蔵**し、永続化は SQLite（node:sqlite・依存追加なし）。kaikei-api へは Outbox 方式で仕訳をミラーし、kanri-dwh（管理会計 DWH）の KPI をプロキシ照会する。
+**v5: データ基盤を PostgreSQL に統一。** 1 台の PostgreSQL サーバ上に 3 つのデータベース（purchase / kaikei / kanri）を作り、3 システムのエンジンを統一する。システム境界・Outbox ミラー・突合の仕組みは不変。SQLite（node:sqlite）と DuckDB は退役し、既存データは一次移行スクリプトで搬送する。
 
 ```
 public/ (UI)              server.js (API)                       store/
-index.html          ←→    GET/POST /api/...               ←→    purchase-store.js（購買ドメイン・SQLite 永続化）
+index.html          ←→    GET/POST /api/...               ←→    purchase-store.js（購買ドメイン・PG 接続）
 js/app.js                 状態遷移ガード                            journal.js（内蔵会計エンジン）
-6 ビュー（経営DB 含む）         │ │                                 kaikei-client.js（ミラー送信）
+6 ビュー（管理会計含む）       │ │                                 kaikei-client.js（ミラー送信）
                             │ └─ POST /api/management/* ──→    kanri-client.js（KPI プロキシ）
                             ▼                                        │
                       仕訳は購買の遷移から自動生成                      ▼
-                                                  kaikei-api(:8000) →(ETL)→ kanri-dwh(:8100・DuckDB)
+                        PostgreSQL(1 サーバ 3 DB)             kaikei-api(:8000・kaikei DB)
+                        ├ purchase DB（本アプリ）                    │
+                        ├ kaikei DB（台帳）                    (ETL・POST /api/etl)
+                        └ kanri DB（分析 DWH）                      ▼
+                                                  kanri-dwh(:8100・kanri DB)
 ```
 
-**データチェーン（v4）**: purchase-kaikei →(仕訳ミラー・Outbox)→ kaikei-api →(ETL・POST /api/etl)→ kanri-dwh →(KPI)→ purchase-kaikei 経営ダッシュボード。どの先が止まっても購買操作は止まらず、チェーンは最終的に収束する（最終一致性）。
+**データチェーン（v4〜）**: purchase-kaikei →(仕訳ミラー・Outbox)→ kaikei-api →(ETL・POST /api/etl)→ kanri-dwh →(KPI)→ purchase-kaikei 管理会計。どの先が止まっても購買操作は止まらず、チェーンは最終的に収束する（最終一致性）。v5 で流れ場が PostgreSQL に統一される。
 
-### 会計エンジンの設計方針（v2・v4 で永続化を SQLite に移行）
+### 会計エンジンの設計方針（v2〜・v5 で永続化を PostgreSQL に移行）
 
-- 仕訳（entry）は `{id, date, description, department, lines:[{account_code, side, amount}]}`。SQLite の `journal_entries` + `journal_lines` に蓄積する（購買・支払予定・Outbox キューと**同一トランザクション**で書き込まれるため、検収/支払と仕訳は必ず整合する）。
+- 仕訳（entry）は `{id, date, description, department, lines:[{account_code, side, amount}]}`。PostgreSQL の `journal_entries` + `journal_lines` に蓄積する（購買・支払予定・Outbox キューと**同一トランザクション**で書き込まれるため、検収/支払と仕訳は必ず整合する）。
 - 検収 → 借: 仕入高 5110 / 貸: 買掛金 2110。支払 → 借: 買掛金 2110 / 貸: 普通預金 1120。department は申請の部門。
 - 試算表・総勘定元帳は**要求のたびに仕訳台帳から計算**する（保存しない = 計算結果の実体を持たないため、帳簿ずれが構造的に起きない）。
 - 科目マスタは 11 科目固定（kaikei-api と同じ体系）。貸借一致は engine が生成するため必ず保たれる。
+
+### Components (CMP-*)
+
+- CMP-PURCHASEKAIKEI-001: server.js — Express サーバー。静的配信 + REST API + 遷移ガード + 会計レポート API + 連携プロキシ
+- CMP-PURCHASEKAIKEI-002: store/purchase-store.js — 購買ドメイン層（v5: PostgreSQL 永続化 + Outbox + 自動再送タイマー）
+- CMP-PURCHASEKAIKEI-005: store/journal.js — **内蔵会計エンジン**: 仕訳計上（貸借一致チェック）・残高試算表計算・総勘定元帳計算・科目/部門マスタ
+- CMP-PURCHASEKAIKEI-004: public/ — UI（6 ビュー: ダッシュボード / 新規申請 / 申請一覧 / 支払予定 / 財務会計 / 管理会計）
+- CMP-PURCHASEKAIKEI-006: store/kaikei-client.js + store/kanri-client.js — 連携クライアント（注入可能・テストはスタブ）
+- CMP-PURCHASEKAIKEI-007: PostgreSQL — purchase DB（7 テーブル: purchases / payables / journal_entries + journal_lines / pending_links / counters / meta。v4 は SQLite で実装・v5 で PG に移植）
+- CMP-PURCHASEKAIKEI-008: scripts/migrate-to-pg.js — 一次移行スクリプト（旧 SQLite / DuckDB → PG）
+
+### Libraries (LIB-*)
+
+- LIB-PURCHASEKAIKEI-001: express ^4 — HTTP サーバー
+- LIB-PURCHASEKAIKEI-002（v5 追加）: pg ^8 — PostgreSQL クライアント（node:sqlite からの置換。追加はユーザー承認済み）
 
 ### Components (CMP-*)
 
@@ -83,6 +104,7 @@ js/app.js                 状態遷移ガード                            journ
 - CT-API-PURCHASEKAIKEI-007（v3/v4）: GET /api/accounting/sync（未同期状態）+ POST /api/accounting/sync（手動再送）— Outbox ミラー連携。kaikei_unavailable は 502
 - CT-API-PURCHASEKAIKEI-008（v4）: GET /api/management/kpi/:name（reconcile / pl-by-department / sales-by-month / expense-by-account / cash-trend の whitelist プロキシ）+ POST /api/management/etl（kanri-dwh の取込起動）— kanri_unavailable / kanri_source_error は 502
 - 共通: 許可外の遷移は 409 {error:"invalid_transition"}、入力不足は 400
+- v5 共通: DB 接続は環境変数（PG_CONNECTION 系・.env）で管理しコミットしない。API 契約そのものは v4 から不変（DB 置換は内部実装のみ）
 
 ## Test Strategy (3-layer, Tecnos coverage tier)
 
@@ -102,12 +124,14 @@ js/app.js                 状態遷移ガード                            journ
 - TS-INT-PURCHASEKAIKEI-006: 会計 API — 試算表・元帳・科目一覧が購買操作を反映して返る
 - TS-INT-PURCHASEKAIKEI-007（v3/v4）: ミラー連携（Outbox）— 障害でキュー保持・再送で送信
 - TS-INT-PURCHASEKAIKEI-008/009（v4）: 管理会計プロキシ — KPI 中継・未知 KPI 404・ETL 起動・kanri-dwh 障害 502
-- 永続化（v4）: SQLite 再起動復元 — purchases + payables + entries + キューが保持される
+- TS-INT-PURCHASEKAIKEI-010（v5）: PostgreSQL 移行 — 一次移行スクリプトで旧 DB のデータが移行され、突合が一致する
+- 永続化（v4 → v5）: PG 再起動復元 — purchases + payables + entries + キューが保持される（テストはテスト用 DB を使用・実行にローカル PG が必要）
 
 ### E2E
 
 - TS-E2E-PURCHASEKAIKEI-001: 申請→承認→発注→分割検収→支払→試算表/元帳照会のクリティカルジャーニー
 - 実機連携 E2E（v4・手動）: 購買検収 → kaikei-api ミラー → kanri-dwh ETL → KPI 表示（2026-09-11 実施済み・31 仕訳取込・突合一致）
+- 実機連携 E2E（v5・手動）: 同チェーンが全て PostgreSQL 上で動くことを確認予定
 
 ## Evidence Pack (Final Gate 5 要件)
 

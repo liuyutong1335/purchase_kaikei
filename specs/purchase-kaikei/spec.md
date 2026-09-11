@@ -3,7 +3,7 @@ artifact: spec
 template_id: TPL-SPEC-001
 feature_id: FEAT-PURCHASEKAIKEI
 feature_name: "purchase-kaikei"
-version: 4
+version: 5
 ---
 
 # 0. Canonical Spec (YAML SSoT)
@@ -12,7 +12,7 @@ version: 4
 spec:
   id: SPEC-PURCHASEKAIKEI-001
   feature_id: FEAT-PURCHASEKAIKEI
-  version: 4
+  version: 5
   acceptance_criteria:
     - id: AC-US-PURCHASEKAIKEI-001-01
       description: 必須項目（品目・数量・単価・申請者）を入力して登録すると、状態=submitted の申請が一覧に表示される
@@ -66,7 +66,13 @@ spec:
       description: 経営ダッシュボード画面で kanri-dwh（管理会計 DWH・port 8100）の突合状態と 4 KPI（部門別損益・月別売上・科目別費用・資金推移）を照会できる。kanri-dwh が稼働していない場合はその旨が表示され、購買操作・会計機能には一切影響しない
       tags: [must]
     - id: AC-US-PURCHASEKAIKEI-008-02
-      description: 「DWH に取込（ETL）」ボタンで kanri-dwh の取込（POST /api/etl・CLI と同じ経路・冪等）を起動でき、kaikei-api にミラー済みの仕訳が DuckDB に反映されて KPI に現れる
+      description: 「DWH に取込（ETL）」ボタンで kanri-dwh の取込（POST /api/etl・CLI と同じ経路・冪等）を起動でき、kaikei-api にミラー済みの仕訳が分析 DWH に反映されて KPI に現れる
+      tags: [must]
+    - id: AC-US-PURCHASEKAIKEI-009-01
+      description: 3 システムの全データが 1 台の PostgreSQL サーバ上の 3 つのデータベース（purchase / kaikei / kanri）に保存され、psql 等の標準ツールで直接照会できる。テーブル構造・API 応答・画面表示は v4 までと同一
+      tags: [must]
+    - id: AC-US-PURCHASEKAIKEI-009-02
+      description: 一次移行スクリプト（scripts/migrate-to-pg.js）で旧 SQLite（purchase-kaikei.db）および DuckDB（kanri.duckdb）の既存データが PostgreSQL に移行され、移行後に突合が一致する
       tags: [must]
   non_functional:
     - id: NFR-PURCHASEKAIKEI-001-01
@@ -74,13 +80,16 @@ spec:
       target: 全 API の応答がローカル実行で 500ms 以内（デモ規模 < 1000 件）
     - id: NFR-PURCHASEKAIKEI-001-02
       type: persistence
-      target: サーバー再起後も購買データ・支払予定・仕訳台帳（entry id 含む）が保持される（SQLite 永続化・node:sqlite・依存追加なし。v4 で JSON から移行）
+      target: サーバー再起後も購買データ・支払予定・仕訳台帳（entry id 含む）が保持される（v5 で PostgreSQL 永続化 — 1 サーバ 3 データベース構成。v4 で SQLite 化、v3 まで JSON）
     - id: NFR-PURCHASEKAIKEI-001-03
       type: auditability
       target: 全状態遷移・検収・支払・仕訳計上（entry id 付き）が履歴として保存・照会できる
     - id: NFR-PURCHASEKAIKEI-001-04
       type: resilience
       target: kaikei-api 連携（v3・ミラー送信）が失敗しても購買・会計機能は完全に動作し、未同期仕訳は再送できる。単体でも Node.js だけで完結して動く
+    - id: NFR-PURCHASEKAIKEI-001-05
+      type: security
+      target: DB 接続情報（パスワード等）は環境変数・.env で管理し、リポジトリにコミットしない（.gitignore で保証）
 ```
 
 # 1. Human-readable section
@@ -103,6 +112,10 @@ submitted ──承認(1段)──▶ approved ──発注──▶ ordered ─
   - 未同期キューに**自動再送タイマー**（30 秒間隔・起動直後 1 回）を追加。
   - **kanri-dwh 連携（管理会計）を In-scope に変更**（ユーザー指示）: 経営ダッシュボード view で突合状態・部門別損益・月別売上・科目別費用・資金推移を照会。3 システムチェーン: purchase-kaikei →(ミラー)→ kaikei-api →(ETL)→ kanri-dwh →(KPI)→ purchase-kaikei。
   - UI を簡約デザイン（深紺 × 金アクセント）に刷新。
+- **v5 変更（2026-09-11・ユーザー決定 4 項目）**: データ基盤を **PostgreSQL に統一**。
+  - 1 台の PostgreSQL サーバ + 3 データベース（purchase / kaikei / kanri）— エンジン統一、システム境界と突合の意義は維持
+  - DuckDB は退役（星型スキーマは Postgres のテーブル + ビューで再現）。SQLite（node:sqlite）も退役（Node 側は pg ドライバ追加・ユーザー承認済み）
+  - 既存データは一次移行スクリプトで搬送。接続情報は環境変数管理（NFR-001-05 新設）
 
 ## 仕訳の対応表（内蔵会計エンジンが計上）
 
@@ -134,7 +147,9 @@ submitted ──承認(1段)──▶ approved ──発注──▶ ordered ─
 | AC-007-01 | kaikei-api 稼働中 | 検収・支払を実行 | 仕訳がミラー送信され kaikeiEntryId が記録される |
 | AC-007-02 | kaikei-api 停止中に検収 | 復帰後（操作なし） | 自動再送タイマー（30 秒間隔）が未同期を送信する |
 | AC-008-01 | kanri-dwh 稼働中 | 経営ダッシュボード照会 | 突合状態と 4 KPI（部門別損益・月別売上・科目別費用・資金推移）が表示される |
-| AC-008-02 | ミラー済み仕訳がある | ETL ボタンを押す | DuckDB に取込まれ（冪等）KPI に反映される |
+| AC-008-02 | ミラー済み仕訳がある | ETL ボタンを押す | 分析 DWH に取込まれ（冪等）KPI に反映される |
+| AC-009-01 | PostgreSQL 稼働中 | 全機能を操作・psql で照会 | 全データが 1 サーバ 3 DB（purchase/kaikei/kanri）に保存され、表示・API 応答は v4 までと同一 |
+| AC-009-02 | 旧 DB ファイルがある | 移行スクリプトを実行 | SQLite/DuckDB の既存データが PG に移行され、移行後に突合が一致する |
 
 ## Out-of-scope
 
