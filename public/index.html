@@ -24,6 +24,7 @@
         <button data-view="list">申請一覧</button>
         <button data-view="payables">支払予定</button>
         <button data-view="accounting">会計</button>
+        <button data-view="management">経営ダッシュボード</button>
       </nav>
 
       <div class="actor-box" id="kaikei-status">
@@ -229,6 +230,83 @@
               <tbody></tbody>
             </table>
             <div class="empty" id="ledger-empty" hidden>科目を選んで「照会」を押してください</div>
+          </div>
+        </div>
+      </section>
+    </main>
+      <!-- 経営ダッシュボード（kanri-dwh 連携） -->
+      <section class="view" id="view-management" hidden>
+        <div class="panel">
+          <h2>kanri-dwh 連携 <span class="hint">管理会計 DWH（DuckDB）— kaikei-api 台帳を取込して KPI 表示</span></h2>
+          <div class="mgmt-toolbar">
+            <div id="kanri-status" class="sync-status">kanri-dwh の状態確認中…</div>
+            <button class="btn primary" id="kanri-etl">DWH に取込（ETL）</button>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="mgmt-from">開始月（任意）</label>
+              <input id="mgmt-from" type="month" />
+            </div>
+            <div class="field">
+              <label for="mgmt-to">終了月（任意）</label>
+              <input id="mgmt-to" type="month" />
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="btn primary" id="mgmt-refresh">照会</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>部門別損益 <span class="hint">収益 − 費用（kanri-dwh 計算）</span></h2>
+          <div class="table-wrap">
+            <table id="pl-table">
+              <thead>
+                <tr><th>部門</th><th class="amount">収益</th><th class="amount">費用</th><th class="amount">損益</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="pl-empty" hidden>表示できるデータがありません（DWH 取込後に照会してください）</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>月別売上</h2>
+          <div class="table-wrap">
+            <table id="sales-table">
+              <thead>
+                <tr><th>月</th><th>売上</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="sales-empty" hidden>表示できるデータがありません</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>科目別費用 <span class="hint" id="expense-total"></span></h2>
+          <div class="table-wrap">
+            <table id="expense-table">
+              <thead>
+                <tr><th>科目</th><th>費用</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="expense-empty" hidden>表示できるデータがありません</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>資金推移 <span class="hint">現金 + 普通預金の月末残高</span></h2>
+          <div class="table-wrap">
+            <table id="cash-table">
+              <thead>
+                <tr><th>月</th><th>現金</th><th>普通預金</th><th class="amount">合計</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="cash-empty" hidden>表示できるデータがありません</div>
           </div>
         </div>
       </section>

@@ -25,13 +25,30 @@ function stubKaikei({ fail = false } = {}) {
   };
 }
 
-async function startServer({ kaikeiFail = true } = {}) {
+async function startServer({ kaikeiFail = true, kanri } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-api-'));
   const kaikei = stubKaikei({ fail: kaikeiFail });
-  const app = createApp(new PurchaseStore(dir, kaikei));
+  const app = createApp(new PurchaseStore(dir, kaikei), kanri);
   const server = app.listen(0);
   const base = `http://127.0.0.1:${server.address().port}`;
   return { server, base, kaikei };
+}
+
+// kanri-dwh（管理会計 DWH）のスタブ: fail で障害を再現
+function stubKanri() {
+  const state = { fail: false };
+  return {
+    state,
+    kpi: async (name, query) => {
+      if (state.fail) { const e = new Error('down'); e.code = 'kanri_unavailable'; throw e; }
+      if (name === 'reconcile') return { dwh: { debit: 100, credit: 100 }, source: { debit: 100, credit: 100 }, matched: true };
+      return { rows: [{ month: '2026-09', revenue: 5000, expense: 2000, total: 3000, name: 'X', department: 'D10', account_code: '5110', cash: 1000, deposit: 2000 }] };
+    },
+    runEtl: async () => {
+      if (state.fail) { const e = new Error('down'); e.code = 'kanri_unavailable'; throw e; }
+      return { entry_count: 3, line_count: 6, date_from: '2026-09-01', date_to: '2026-09-30' };
+    },
+  };
 }
 
 function post(base, url, body) {
@@ -255,4 +272,35 @@ test('NFR-002: サーバー再起後も purchases + payables + 仕訳台帳が�
     const tb = await (await fetch(`${base2}/api/accounting/trial-balance`)).json();
     assert.equal(tb.rows.find((r) => r.account_code === '5110').debit_balance, 50000); // 仕訳台帳も復元
   } finally { s2.close(); }
+});
+
+/* ---------- 経営ダッシュボード（kanri-dwh 連携・プロキシ） ---------- */
+
+test('TS-INT-008: 管理会計 KPI プロキシ — kanri-dwh の応答をそのまま返す', async () => {
+  const { server, base } = await startServer({ kanri: stubKanri() });
+  try {
+    const rec = await (await fetch(`${base}/api/management/kpi/reconcile`)).json();
+    assert.equal(rec.matched, true); // 突合状態
+
+    const pl = await (await fetch(`${base}/api/management/kpi/pl-by-department?from=2026-09&department=D10`)).json();
+    assert.equal(pl.rows.length, 1);
+
+    const noKpi = await fetch(`${base}/api/management/kpi/unknown`);
+    assert.equal(noKpi.status, 404); // 未知の KPI は 404
+  } finally { server.close(); }
+});
+
+test('TS-INT-009: ETL 起動プロキシ — 成功時は報告を返し、kanri-dwh 障害時は 502', async () => {
+  const kanri = stubKanri();
+  const { server, base } = await startServer({ kanri });
+  try {
+    const r = await post(base, '/api/management/etl', {});
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.entry_count, 3);
+
+    kanri.state.fail = true; // 障害 → 502（購買操作には無関係）
+    const down = await post(base, '/api/management/etl', {});
+    assert.equal(down.status, 502);
+  } finally { server.close(); }
 });

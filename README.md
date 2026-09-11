@@ -35,6 +35,23 @@ npm start        # → http://localhost:3010（会計エンジン内蔵・これ
 - 同期済みの仕訳には kaikei-api 側の採番 id（`kaikeiEntryId`）が記録され、向こうの総勘定元帳でも追跡できます。
 - URL は `KAIKEI_API_URL` 環境変数で変更可（既定 `http://localhost:8000`）。
 
+## 経営ダッシュボード（kanri-dwh 連携・オプション）
+
+3 システムが 1 本のチェーンでつながります:
+
+```
+purchase-kaikei ──仕訳ミラー──▶ kaikei-api(:8000)
+      ▲                            │
+      │ KPI 表示                    │ kanri etl（台帳を取込）
+      │                            ▼
+      └─ 経営ダッシュボード ◀── kanri-dwh(:8100・DuckDB)
+```
+
+- ナビの「**経営ダッシュボード**」で、kanri-dwh（管理会計 DWH）の **部門別損益・月別売上・科目別費用・資金推移** と突合状態を表示します（このアプリが全システムの入り口になる）。
+- **「DWH に取込（ETL）」ボタン**で kanri-dwh の取込（`POST /api/etl`・CLI と同じ経路・冪等）を起動。kaikei-api にミラー済みの仕訳が DuckDB に反映され、KPI に反映されます。
+- kanri-dwh が止まっていても購買・会計ビューは通常どおり。ダッシュボードにその旨を表示するだけです。
+- URL は `KANRI_DWH_URL` 環境変数で変更可（既定 `http://localhost:8100`）。
+
 ## 使い方
 
 1. 「新規申請」から申請（申請者・品目・数量・単価は必須、部門を選択）

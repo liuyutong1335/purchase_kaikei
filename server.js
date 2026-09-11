@@ -3,8 +3,9 @@
 const path = require('path');
 const express = require('express');
 const { PurchaseStore, TransitionError, ValidationError } = require('./store/purchase-store');
+const { KanriClient } = require('./store/kanri-client');
 
-function createApp(store) {
+function createApp(store, kanri) {
   const app = express();
   app.use(express.json());
   // 開発時の更新を即反映させたいので、静的ファイルは常に再検証させる
@@ -12,12 +13,16 @@ function createApp(store) {
     setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
   }));
 
+  const kanriClient = kanri || new KanriClient();
+
   const handleError = (err, res) => {
     if (res.headersSent) return;
     if (err instanceof TransitionError) return res.status(409).json({ error: err.code, message: err.message });
     if (err instanceof ValidationError) return res.status(400).json({ error: err.code, message: err.message });
     if (err.code === 'not_found') return res.status(404).json({ error: err.message });
-    if (err.code === 'kaikei_unavailable') return res.status(502).json({ error: err.code, message: err.message });
+    if (err.code === 'kaikei_unavailable' || err.code === 'kanri_unavailable' || err.code === 'kanri_source_error') {
+      return res.status(502).json({ error: err.code, message: err.message });
+    }
     // 最後の安全網: 未分類エラーでも 500 を返してプロセスを生かす（Express 4 は async の
     // 例外を uncaught で落とすため、ここで再 throw しない）
     console.error('unhandled error:', err);
@@ -108,6 +113,29 @@ function createApp(store) {
   app.post('/api/accounting/sync', async (req, res) => {
     try {
       res.json(await store.syncPending());
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
+  // 管理会計 DWH（kanri-dwh）連携 — プロキシのみ（購買操作には無関係・障害時は 502）
+  const KPI_NAMES = ['reconcile', 'pl-by-department', 'sales-by-month', 'expense-by-account', 'cash-trend'];
+
+  app.get('/api/management/kpi/:name', async (req, res) => {
+    if (!KPI_NAMES.includes(req.params.name)) {
+      return res.status(404).json({ error: 'not_found', message: `unknown kpi: ${req.params.name}` });
+    }
+    try {
+      const { from, to, department } = req.query;
+      res.json(await kanriClient.kpi(req.params.name, { from, to, department }));
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
+  app.post('/api/management/etl', async (req, res) => {
+    try {
+      res.json(await kanriClient.runEtl());
     } catch (err) {
       handleError(err, res);
     }
