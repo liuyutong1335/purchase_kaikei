@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="TS-INT-001: 申請登録（部門含む）→一覧照会、部門不正は 400" time="0.843734" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-INT-002: 承認 / 却下（comment 必須）/ 再申請" time="0.170424" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-INT-003: 発注（approved のみ・発注番号採番・他状態は 409）" time="0.100537" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-INT-004: 分割検収 → 支払予定計上 + 仕訳自動計上" time="0.184715" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-INT-005: 支払実行 → 仕訳自動計上・entryId 記録・二重支払 409" time="0.214420" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-INT-006: 会計 API が購買操作を反映する" time="0.186957" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-E2E-001: 購買会計フロー完走（申請→支払→試算表/元帳照会）" time="0.324144" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-INT-007: ミラー連携 API（Outbox）— 障害でキュー保持・再送で送信" time="0.185048" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="NFR-002: サーバー再起後も purchases + payables + 仕訳台帳が保持される" time="0.158806" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-INT-008: 管理会計 KPI プロキシ — kanri-dwh の応答をそのまま返す" time="0.088847" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="TS-INT-009: ETL 起動プロキシ — 成功時は報告を返し、kanri-dwh 障害時は 502" time="0.071862" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\api.test.js"/>
+	<testcase name="nextMonthEnd: 月末締め翌月末払いの日付計算" time="0.000896" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="create: 正常登録で状態=submitted、既定部門は D90" time="0.055380" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="create: 部門は D10/D20/D90 のみ" time="0.047432" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="create: 必須項目不足は ValidationError" time="0.051177" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="AC-002-01: 承認は submitted → approved の 1 段（金額に関係なく）" time="0.073448" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="AC-002-02/03: 却下は comment 必須、再申請で submitted に戻る" time="0.070017" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="AC-003-01: order は approved のみ、発注番号は連番" time="0.072638" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="AC-004-01/03: 検収ごとに仕訳（借 5110 / 貸 2110）が計上され支払予定が計上される" time="0.118693" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="AC-005-02/03: 支払実行で仕訳（借 2110 / 貸 1120）計上・entryId 記録・二重支払不可" time="0.088725" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="engine: 貸借不一致・未知科目・不正金額は拒否" time="0.000604" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="engine: 試算表は 11 科目すべて（残高 0 含む）・貸借一致" time="0.000452" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="engine: 元帳は日付昇順・残高繰越。貸方科目は逆符号" time="0.000319" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="engine: 部門フィルタ（department 指定はその部門の仕訳のみ集計）" time="0.000115" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="persistence: 再生成後も purchases + payables + entries（仕訳台帳）が保持される (NFR-002)" time="0.099866" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="AC-007-01: 検収・支払の仕訳が kaikei-api にミラー送信され kaikeiEntryId が記録される" time="0.089172" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="AC-007-02: 障害時はキュー保持で購買は止まらず、復帰後の再送で取り込まれる" time="0.128080" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<testcase name="auto-sync: 検収・支払を待たずとも復帰後に自動再送される" time="0.170819" classname="test" file="C:\Users\liu.yutong\OneDrive - 株式会社テクノスジャパン\デスクトップ\AI研修用\products\purchase-kaikei\test\store.test.js"/>
+	<!-- tests 28 -->
+	<!-- suites 0 -->
+	<!-- pass 28 -->
+	<!-- fail 0 -->
+	<!-- cancelled 0 -->
+	<!-- skipped 0 -->
+	<!-- todo 0 -->
+	<!-- duration_ms 11664.9874 -->
+</testsuites>
