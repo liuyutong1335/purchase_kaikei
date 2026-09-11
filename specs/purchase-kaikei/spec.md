@@ -3,7 +3,7 @@ artifact: spec
 template_id: TPL-SPEC-001
 feature_id: FEAT-PURCHASEKAIKEI
 feature_name: "purchase-kaikei"
-version: 2
+version: 3
 ---
 
 # 0. Canonical Spec (YAML SSoT)
@@ -12,7 +12,7 @@ version: 2
 spec:
   id: SPEC-PURCHASEKAIKEI-001
   feature_id: FEAT-PURCHASEKAIKEI
-  version: 2
+  version: 3
   acceptance_criteria:
     - id: AC-US-PURCHASEKAIKEI-001-01
       description: 必須項目（品目・数量・単価・申請者）を入力して登録すると、状態=submitted の申請が一覧に表示される
@@ -56,6 +56,12 @@ spec:
     - id: AC-US-PURCHASEKAIKEI-006-02
       description: 会計画面から科目を選んで総勘定元帳を照会でき、日付昇順・残高列（繰越含む）付きで表示される
       tags: [must]
+    - id: AC-US-PURCHASEKAIKEI-007-01
+      description: 検収・支払で計上した各仕訳は、kaikei-api（port 8000）が稼働している場合に自動でミラー送信され（Outbox 方式）、向こう側の entry id（kaikeiEntryId）が記録される。kaikei-api が無くても購買操作・会計機能は一切止まらない
+      tags: [must]
+    - id: AC-US-PURCHASEKAIKEI-007-02
+      description: 送信失敗の仕訳は未同期キューに保持され、会計画面で件数と直近エラーが見え、再送信ボタン（POST /api/accounting/sync）で取り込める。kaikei-api 復帰後は次の検収・支払でも自動で再送される
+      tags: [must]
   non_functional:
     - id: NFR-PURCHASEKAIKEI-001-01
       type: performance
@@ -67,8 +73,8 @@ spec:
       type: auditability
       target: 全状態遷移・検収・支払・仕訳計上（entry id 付き）が履歴として保存・照会できる
     - id: NFR-PURCHASEKAIKEI-001-04
-      type: portability
-      target: 外部 API に依存せず Node.js だけで完結して動く（v2 で kaikei-api 連携を廃止・会計機能は内蔵）
+      type: resilience
+      target: kaikei-api 連携（v3・ミラー送信）が失敗しても購買・会計機能は完全に動作し、未同期仕訳は再送できる。単体でも Node.js だけで完結して動く
 ```
 
 # 1. Human-readable section
@@ -84,7 +90,8 @@ submitted ──承認(1段)──▶ approved ──発注──▶ ordered ─
 
 - 購買側の状態遷移は purchase-management v3（1 段承認・分割検収・月末締め翌月末払い）を引き継ぐ。
 - 追加: 申請に**部門**を持つ（D10/D20/D90、既定 D90）。
-- **v2 変更**: 会計機能を内蔵エンジン（仕訳台帳を JSON に保持し、試算表・総勘定元帳をその場で計算）に置換し、kaikei-api（FastAPI・port 8000）への HTTP 連携を**廃止**。検収・支払は常に成功し、単体で完結する。
+- **v2 変更**: 会計機能を内蔵エンジン（仕訳台帳を JSON に保持し、試算表・総勘定元帳をその場で計算）に置換。検収・支払は常に即座に計上される。
+- **v3 変更（本ブランチ feature/kaikei-linkage）**: kaikei-api への連携を **Outbox 方式（ミラー送信）** で再設計。内蔵エンジンが正本のまま、kaikei-api が稼働していれば仕訳を自動ミラー、失敗時は未同期キューで保持・再送。**連携失敗が購買操作を妨げることは v1 のような二度とない**。
 
 ## 仕訳の対応表（内蔵会計エンジンが計上）
 
@@ -116,7 +123,8 @@ submitted ──承認(1段)──▶ approved ──発注──▶ ordered ─
 
 ## Out-of-scope
 
-- **外部 API との連携** — kaikei-api（FastAPI）連携は v2 で廃止（内蔵会計エンジンに置換）。管理会計（kanri-dwh・KPI DWH）も対象外
+- **管理会計（kanri-dwh）との連携** — DuckDB ETL・KPI ダッシュボード・突合は対象外
+- 実金流連携・仕訳の取消（逆仕訳）UI
 - 実金流連携・仕訳の取消（逆仕訳）UI
 - 認証/権限制御（履歴のアクタは「担当」として記録）
 - マルチテナント・デプロイ（ローカル実行のみ）

@@ -17,6 +17,7 @@ function createApp(store) {
     if (err instanceof TransitionError) return res.status(409).json({ error: err.code, message: err.message });
     if (err instanceof ValidationError) return res.status(400).json({ error: err.code, message: err.message });
     if (err.code === 'not_found') return res.status(404).json({ error: err.message });
+    if (err.code === 'kaikei_unavailable') return res.status(502).json({ error: err.code, message: err.message });
     // 最後の安全網: 未分類エラーでも 500 を返してプロセスを生かす（Express 4 は async の
     // 例外を uncaught で落とすため、ここで再 throw しない）
     console.error('unhandled error:', err);
@@ -99,12 +100,26 @@ function createApp(store) {
     }
   });
 
+  // CT-API-PURCHASEKAIKEI-007: kaikei-api ミラー連携（v3・Outbox）
+  app.get('/api/accounting/sync', (req, res) => {
+    res.json(store.syncStatus());
+  });
+
+  app.post('/api/accounting/sync', async (req, res) => {
+    try {
+      res.json(await store.syncPending());
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
   return app;
 }
 
 if (require.main === module) {
   const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
   const store = new PurchaseStore(dataDir);
+  store.startAutoSync(); // Outbox 自動再送（30 秒間隔・起動直後にも 1 回）
   const port = process.env.PORT || 3010;
   createApp(store).listen(port, () => {
     console.log(`購買会計システム: http://localhost:${port}（会計エンジン内蔵・単体で完結）`);

@@ -139,3 +139,13 @@ paths:
       responses:
         "200": { description: "OK — 日付昇順・残高列（繰越）付き" }
         "404": { description: 科目未存在 }
+  /api/accounting/sync:
+    get:
+      summary: ミラー連携状態（未同期件数・直近エラー・kaikei-api URL）
+      responses:
+        "200": { description: OK }
+    post:
+      summary: 未同期仕訳の再送信（Outbox ドレイン）
+      responses:
+        "200": { description: "OK — {sent, remaining, pending, lastError}" }
+        "502": { description: kaikei_unavailable — キューは保持される }

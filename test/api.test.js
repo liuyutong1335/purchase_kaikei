@@ -6,13 +6,32 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createApp, PurchaseStore } = require('../server');
+const { KaikeiUnavailableError } = require('../store/kaikei-client');
 
-async function startServer() {
+// モック kaikei クライアント（テストが実ネットワークに流れないように注入する）
+function stubKaikei({ fail = false } = {}) {
+  const posted = [];
+  const state = { fail };
+  let nextId = 500;
+  return {
+    posted,
+    state,
+    baseUrl: 'http://localhost:8000',
+    postEntry: async (body) => {
+      if (state.fail) throw new KaikeiUnavailableError(new Error('down'));
+      posted.push(body);
+      return { id: nextId++, ...body };
+    },
+  };
+}
+
+async function startServer({ kaikeiFail = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-api-'));
-  const app = createApp(new PurchaseStore(dir));
+  const kaikei = stubKaikei({ fail: kaikeiFail });
+  const app = createApp(new PurchaseStore(dir, kaikei));
   const server = app.listen(0);
   const base = `http://127.0.0.1:${server.address().port}`;
-  return { server, base };
+  return { server, base, kaikei };
 }
 
 function post(base, url, body) {
@@ -185,9 +204,36 @@ test('TS-E2E-001: 購買会計フロー完走（申請→支払→試算表/元�
   } finally { server.close(); }
 });
 
+test('TS-INT-007: ミラー連携 API（Outbox）— 障害でキュー保持・再送で送信', async () => {
+  const { server, base, kaikei } = await startServer(); // kaikeiFail 既定 true（障害状態）
+  try {
+    const p = await createPurchase(base, { item: '連携テスト', qty: 3, unitPrice: 1000, department: 'D20' });
+    await post(base, `/api/purchases/${p.id}/approve`, { actor: '鈴木 (部長)' });
+    await post(base, `/api/purchases/${p.id}/order`, { actor: '佐藤 (管理担当)' });
+    await post(base, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 3, receivedAt: '2026-09-10' });
+
+    // 障害中でも検収は成功し、仕訳は未同期キューに保持される（v1 との決定的な違い）
+    const status = await (await fetch(`${base}/api/accounting/sync`)).json();
+    assert.equal(status.pending, 1);
+    assert.equal(status.url, 'http://localhost:8000');
+
+    // 復帰 → 再送
+    kaikei.state.fail = false;
+    const r = await post(base, '/api/accounting/sync', {});
+    const body = await r.json();
+    assert.equal(body.sent, 1);
+    assert.equal(body.remaining, 0);
+    assert.equal(kaikei.posted[0].department, 'D20');
+
+    // 同期済み
+    const after = await (await fetch(`${base}/api/accounting/sync`)).json();
+    assert.equal(after.pending, 0);
+  } finally { server.close(); }
+});
+
 test('NFR-002: サーバー再起後も purchases + payables + 仕訳台帳が保持される', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-persist-'));
-  const app1 = createApp(new PurchaseStore(dir));
+  const app1 = createApp(new PurchaseStore(dir, stubKaikei({ fail: true })));
   const s1 = app1.listen(0);
   const base1 = `http://127.0.0.1:${s1.address().port}`;
   const p = await createPurchase(base1, { item: '永続化チェック', qty: 1, unitPrice: 50000 });

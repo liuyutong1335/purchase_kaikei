@@ -11,7 +11,7 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-icon">🛒</span>
+        <span class="brand-mark"></span>
         <div>
           <h1>購買会計システム</h1>
           <p class="brand-sub">検収・支払で仕訳を自動計上</p>
@@ -19,11 +19,11 @@
       </div>
 
       <nav class="nav" id="nav">
-        <button data-view="dashboard" class="active">📊 ダッシュボード</button>
-        <button data-view="new">📝 新規申請</button>
-        <button data-view="list">📋 申請一覧</button>
-        <button data-view="payables">💰 支払予定</button>
-        <button data-view="accounting">📒 会計</button>
+        <button data-view="dashboard" class="active">ダッシュボード</button>
+        <button data-view="new">新規申請</button>
+        <button data-view="list">申請一覧</button>
+        <button data-view="payables">支払予定</button>
+        <button data-view="accounting">会計</button>
       </nav>
 
       <div class="actor-box" id="kaikei-status">
@@ -167,6 +167,12 @@
 
       <!-- 会計 -->
       <section class="view" id="view-accounting" hidden>
+        <div class="panel" id="sync-panel">
+          <h2>kaikei-api 連携 <span class="hint">オプション — 仕訳をミラー送信（止まっても購買は動く）</span></h2>
+          <div id="sync-status" class="sync-status">状態確認中…</div>
+          <button class="btn primary" id="sync-retry">未同期を再送信</button>
+        </div>
+
         <div class="panel">
           <h2>残高試算表 <span class="hint">内蔵会計エンジンが計算（残高 0 科目も表示）</span></h2>
           <div class="field-row">
