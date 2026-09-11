@@ -35,7 +35,7 @@ npm start        # → http://localhost:3010（会計エンジン内蔵・これ
 - 同期済みの仕訳には kaikei-api 側の採番 id（`kaikeiEntryId`）が記録され、向こうの総勘定元帳でも追跡できます。
 - URL は `KAIKEI_API_URL` 環境変数で変更可（既定 `http://localhost:8000`）。
 
-## 経営ダッシュボード（kanri-dwh 連携・オプション）
+## 管理会計（kanri-dwh 連携・オプション）
 
 3 システムが 1 本のチェーンでつながります:
 
@@ -47,7 +47,7 @@ purchase-kaikei ──仕訳ミラー──▶ kaikei-api(:8000)
       └─ 経営ダッシュボード ◀── kanri-dwh(:8100・DuckDB)
 ```
 
-- ナビの「**経営ダッシュボード**」で、kanri-dwh（管理会計 DWH）の **部門別損益・月別売上・科目別費用・資金推移** と突合状態を表示します（このアプリが全システムの入り口になる）。
+- ナビの「**管理会計**」で、kanri-dwh（管理会計 DWH）の **部門別損益・月別売上・科目別費用・資金推移** と突合状態を表示します（このアプリが全システムの入り口になる）。
 - **「DWH に取込（ETL）」ボタン**で kanri-dwh の取込（`POST /api/etl`・CLI と同じ経路・冪等）を起動。kaikei-api にミラー済みの仕訳が DuckDB に反映され、KPI に反映されます。
 - kanri-dwh が止まっていても購買・財務会計ビューは通常どおり。ダッシュボードにその旨を表示するだけです。
 - URL は `KANRI_DWH_URL` 環境変数で変更可（既定 `http://localhost:8100`）。
@@ -70,11 +70,11 @@ purchase-kaikei ──仕訳ミラー──▶ kaikei-api(:8000)
 ## テスト
 
 ```bash
-npm test         # node --test、26 テスト（unit + integration + E2E・外部依存なし）
+npm test         # node --test、28 テスト（unit + integration + E2E・外部依存なし）
 ```
 
 ## SDD 成果物 (specs/purchase-kaikei/)
 
 basic_design.md / process.bpmn（scripts/gen-bpmn.js で生成）/ spec.md / plan.md / tasks.md /
 contracts/openapi.yaml / tests/scenarios.yaml / state/state.yaml / implementation-details/
-※ APPROVAL.md は HUMAN-ONLY（AI は編集禁止。Gate 1・2 は 2026-09-10 に Liu Yutong が承認済み）
+※ APPROVAL.md は HUMAN-ONLY（AI は編集禁止）。Gate 1・2 と Final Gate（v1〜v3: 2026-09-10 / v4: 2026-09-11）は Liu Yutong が承認済み
