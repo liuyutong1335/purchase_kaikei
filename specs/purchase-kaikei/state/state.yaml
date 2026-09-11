@@ -28,3 +28,12 @@ work_items:
   - id: WI-PURCHASEKAIKEI-006
     title: テスト
     status: done
+  - id: WI-PURCHASEKAIKEI-007
+    title: SQLite 永続化への移行（v4・2026-09-11 追溯登録）
+    status: done
+  - id: WI-PURCHASEKAIKEI-008
+    title: 未同期キューの自動再送タイマー（v4・2026-09-11 追溯登録）
+    status: done
+  - id: WI-PURCHASEKAIKEI-009
+    title: 管理会計（kanri-dwh）連携 + 経営ダッシュボード（v4・2026-09-11 追溯登録）
+    status: done

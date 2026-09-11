@@ -3,7 +3,7 @@ artifact: spec
 template_id: TPL-SPEC-001
 feature_id: FEAT-PURCHASEKAIKEI
 feature_name: "purchase-kaikei"
-version: 3
+version: 4
 ---
 
 # 0. Canonical Spec (YAML SSoT)
@@ -12,7 +12,7 @@ version: 3
 spec:
   id: SPEC-PURCHASEKAIKEI-001
   feature_id: FEAT-PURCHASEKAIKEI
-  version: 3
+  version: 4
   acceptance_criteria:
     - id: AC-US-PURCHASEKAIKEI-001-01
       description: 必須項目（品目・数量・単価・申請者）を入力して登録すると、状態=submitted の申請が一覧に表示される
@@ -60,7 +60,13 @@ spec:
       description: 検収・支払で計上した各仕訳は、kaikei-api（port 8000）が稼働している場合に自動でミラー送信され（Outbox 方式）、向こう側の entry id（kaikeiEntryId）が記録される。kaikei-api が無くても購買操作・会計機能は一切止まらない
       tags: [must]
     - id: AC-US-PURCHASEKAIKEI-007-02
-      description: 送信失敗の仕訳は未同期キューに保持され、会計画面で件数と直近エラーが見え、再送信ボタン（POST /api/accounting/sync）で取り込める。kaikei-api 復帰後は次の検収・支払でも自動で再送される
+      description: 送信失敗の仕訳は未同期キューに保持され、会計画面で件数と直近エラーが見え、再送信ボタン（POST /api/accounting/sync）で取り込める。kaikei-api 復帰後は自動再送タイマー（30 秒間隔・起動直後にも 1 回）と次の検収・支払で自動的に再送される
+      tags: [must]
+    - id: AC-US-PURCHASEKAIKEI-008-01
+      description: 経営ダッシュボード画面で kanri-dwh（管理会計 DWH・port 8100）の突合状態と 4 KPI（部門別損益・月別売上・科目別費用・資金推移）を照会できる。kanri-dwh が稼働していない場合はその旨が表示され、購買操作・会計機能には一切影響しない
+      tags: [must]
+    - id: AC-US-PURCHASEKAIKEI-008-02
+      description: 「DWH に取込（ETL）」ボタンで kanri-dwh の取込（POST /api/etl・CLI と同じ経路・冪等）を起動でき、kaikei-api にミラー済みの仕訳が DuckDB に反映されて KPI に現れる
       tags: [must]
   non_functional:
     - id: NFR-PURCHASEKAIKEI-001-01
@@ -68,7 +74,7 @@ spec:
       target: 全 API の応答がローカル実行で 500ms 以内（デモ規模 < 1000 件）
     - id: NFR-PURCHASEKAIKEI-001-02
       type: persistence
-      target: サーバー再起後も購買データ・支払予定・仕訳台帳（entry id 含む）が保持される（JSON ファイル永続化）
+      target: サーバー再起後も購買データ・支払予定・仕訳台帳（entry id 含む）が保持される（SQLite 永続化・node:sqlite・依存追加なし。v4 で JSON から移行）
     - id: NFR-PURCHASEKAIKEI-001-03
       type: auditability
       target: 全状態遷移・検収・支払・仕訳計上（entry id 付き）が履歴として保存・照会できる
@@ -90,8 +96,13 @@ submitted ──承認(1段)──▶ approved ──発注──▶ ordered ─
 
 - 購買側の状態遷移は purchase-management v3（1 段承認・分割検収・月末締め翌月末払い）を引き継ぐ。
 - 追加: 申請に**部門**を持つ（D10/D20/D90、既定 D90）。
-- **v2 変更**: 会計機能を内蔵エンジン（仕訳台帳を JSON に保持し、試算表・総勘定元帳をその場で計算）に置換。検収・支払は常に即座に計上される。
+- **v2 変更**: 会計機能を内蔵エンジン（仕訳台帳を保持し、試算表・総勘定元帳をその場で計算）に置換。検収・支払は常に即座に計上される。
 - **v3 変更（本ブランチ feature/kaikei-linkage）**: kaikei-api への連携を **Outbox 方式（ミラー送信）** で再設計。内蔵エンジンが正本のまま、kaikei-api が稼働していれば仕訳を自動ミラー、失敗時は未同期キューで保持・再送。**連携失敗が購買操作を妨げることは v1 のような二度とない**。
+- **v4 変更（2026-09-11・SDD 外での実装を追溯して本書に反映）**:
+  - 永続化を JSON から **SQLite（node:sqlite・依存追加なし）** に移行。purchases / payables / journal_entries + journal_lines / pending_links（Outbox）/ counters / meta の 7 テーブルを同一トランザクションで書き込み、常に整合。旧 purchases.json は初回起動時に自動取り込み。
+  - 未同期キューに**自動再送タイマー**（30 秒間隔・起動直後 1 回）を追加。
+  - **kanri-dwh 連携（管理会計）を In-scope に変更**（ユーザー指示）: 経営ダッシュボード view で突合状態・部門別損益・月別売上・科目別費用・資金推移を照会。3 システムチェーン: purchase-kaikei →(ミラー)→ kaikei-api →(ETL)→ kanri-dwh →(KPI)→ purchase-kaikei。
+  - UI を簡約デザイン（深紺 × 金アクセント）に刷新。
 
 ## 仕訳の対応表（内蔵会計エンジンが計上）
 
@@ -120,11 +131,14 @@ submitted ──承認(1段)──▶ approved ──発注──▶ ordered ─
 | AC-005-03 | scheduled の支払予定 | 支払実行 | 仕訳 1 件（借 2110 / 貸 1120）が自動計上され entry id を記録 |
 | AC-006-01 | 仕訳が 1 件以上ある | 会計画面で試算表照会 | 11 科目すべて（残高 0 含む）が表示され、借方合計 = 貸方合計が保たれる |
 | AC-006-02 | 仕訳が 1 件以上ある | 会計画面で科目選択 | 総勘定元帳（日付昇順・残高列）が表示される |
+| AC-007-01 | kaikei-api 稼働中 | 検収・支払を実行 | 仕訳がミラー送信され kaikeiEntryId が記録される |
+| AC-007-02 | kaikei-api 停止中に検収 | 復帰後（操作なし） | 自動再送タイマー（30 秒間隔）が未同期を送信する |
+| AC-008-01 | kanri-dwh 稼働中 | 経営ダッシュボード照会 | 突合状態と 4 KPI（部門別損益・月別売上・科目別費用・資金推移）が表示される |
+| AC-008-02 | ミラー済み仕訳がある | ETL ボタンを押す | DuckDB に取込まれ（冪等）KPI に反映される |
 
 ## Out-of-scope
 
-- **管理会計（kanri-dwh）との連携** — DuckDB ETL・KPI ダッシュボード・突合は対象外
-- 実金流連携・仕訳の取消（逆仕訳）UI
+- ~~管理会計（kanri-dwh）との連携~~ — **v4（2026-09-11）で In-scope に変更**（経営ダッシュボード・ETL 起動。ユーザー指示による）。kanri-dwh 側の KPI 集計ロジック自体は kanri-dwh リポジトリの責務で、本アプリはプロキシのみ
 - 実金流連携・仕訳の取消（逆仕訳）UI
 - 認証/権限制御（履歴のアクタは「担当」として記録）
 - マルチテナント・デプロイ（ローカル実行のみ）

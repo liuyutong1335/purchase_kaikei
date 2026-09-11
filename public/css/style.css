@@ -488,3 +488,45 @@ th.amount { text-align: right; }
 #kaikei-status { margin-top: auto; }
 #kaikei-status > div:first-child { font-weight: 600; }
 #kaikei-status-text { font-size: 11px; color: rgba(255, 255, 255, 0.72); }
+
+/* ---------- 経営ダッシュボード（kanri-dwh 連携） ---------- */
+
+.mgmt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.mgmt-toolbar .sync-status { flex: 1; margin-bottom: 0; }
+.mgmt-toolbar button { flex-shrink: 0; }
+
+/* 簡素バー（数値の正本は表・バーは比率だけ） */
+.bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.bar span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--gold);
+}
+.bar.neg span { background: var(--danger); }
+
+/* 経営ダッシュボードの補助 */
+.view-note { margin: -6px 0 8px; font-size: 11px; color: var(--muted); }
+.panel-muted { background: var(--surface-2); border-color: var(--border); }
+.panel-muted summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.panel-muted summary:hover { color: var(--primary); }
+.panel-muted[open] summary { margin-bottom: 10px; }
+.tag-latest {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--gold);
+  color: var(--navy-900);
+  font-size: 9.5px;
+  vertical-align: 1px;
+}

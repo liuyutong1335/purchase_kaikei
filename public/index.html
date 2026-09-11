@@ -23,7 +23,8 @@
         <button data-view="new">新規申請</button>
         <button data-view="list">申請一覧</button>
         <button data-view="payables">支払予定</button>
-        <button data-view="accounting">会計</button>
+        <button data-view="accounting">財務会計</button>
+        <button data-view="management">管理会計</button>
       </nav>
 
       <div class="actor-box" id="kaikei-status">
@@ -230,6 +231,108 @@
             </table>
             <div class="empty" id="ledger-empty" hidden>科目を選んで「照会」を押してください</div>
           </div>
+        </div>
+      </section>
+
+      <!-- 経営ダッシュボード（kanri-dwh 連携） -->
+      <section class="view" id="view-management" hidden>
+        <div class="kpi-row">
+          <div class="kpi">
+            <div class="kpi-label">今期の損益（全社）</div>
+            <div class="kpi-value" id="mkpi-profit">–</div>
+            <div class="kpi-note">収益 − 費用</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">資金残高</div>
+            <div class="kpi-value" id="mkpi-cash">–</div>
+            <div class="kpi-note" id="mkpi-cash-note">現金 + 普通預金</div>
+          </div>
+          <div class="kpi kpi-accent">
+            <div class="kpi-label">台帳突合</div>
+            <div class="kpi-value" id="mkpi-reconcile">–</div>
+            <div class="kpi-note">DWH と源泉の仕訳が一致しているか</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>部門別損益</h2>
+          <p class="view-note">どの部門が稼いで、どの部門が使っているか。</p>
+          <div class="table-wrap">
+            <table id="pl-table">
+              <thead>
+                <tr><th>部門</th><th class="amount">収益</th><th class="amount">費用</th><th class="amount">損益</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="pl-empty" hidden>表示できるデータがありません（下の「データ連携」で取込してください）</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>資金の推移</h2>
+          <p class="view-note">月末の現金 + 普通預金。減り続けていないかを見る。</p>
+          <div class="table-wrap">
+            <table id="cash-table">
+              <thead>
+                <tr><th>月</th><th>現金</th><th>普通預金</th><th class="amount">残高</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="cash-empty" hidden>表示できるデータがありません</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>費用の内訳 <span class="hint" id="expense-total"></span></h2>
+          <p class="view-note">何にお金を使っているか（多い順）。</p>
+          <div class="table-wrap">
+            <table id="expense-table">
+              <thead>
+                <tr><th>科目</th><th>費用</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="expense-empty" hidden>表示できるデータがありません</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>月別売上</h2>
+          <p class="view-note">仕訳のある月だけ表示。</p>
+          <div class="table-wrap">
+            <table id="sales-table">
+              <thead>
+                <tr><th>月</th><th>売上</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="sales-empty" hidden>表示できるデータがありません</div>
+          </div>
+        </div>
+
+        <div class="panel panel-muted">
+          <details id="mgmt-plumbing">
+            <summary>データ連携の状態（取込・突合の詳細）</summary>
+            <div class="mgmt-toolbar">
+              <div id="kanri-status" class="sync-status">kanri-dwh の状態確認中…</div>
+              <button class="btn primary" id="kanri-etl">DWH に取込（ETL）</button>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="mgmt-from">開始月（任意）</label>
+                <input id="mgmt-from" type="month" />
+              </div>
+              <div class="field">
+                <label for="mgmt-to">終了月（任意）</label>
+                <input id="mgmt-to" type="month" />
+              </div>
+              <div class="field">
+                <label>&nbsp;</label>
+                <button class="btn primary" id="mgmt-refresh">照会</button>
+              </div>
+            </div>
+            <p class="view-note">この画面の数字は、購買の仕訳 → kaikei-api（会計台帳）→ kanri-dwh（DuckDB 取込）と流れてきたものです。</p>
+          </details>
         </div>
       </section>
     </main>

@@ -12,13 +12,15 @@ feature_name: "purchase-kaikei"
 ```yaml
 plan:
   feature_id: FEAT-PURCHASEKAIKEI
-  version: 2
-  architecture: 3-layer + built-in accounting engine (standalone, no external API)
+  version: 3
+  architecture: 3-layer + built-in accounting engine + SQLite persistence + Outbox mirror (kaikei-api) + kanri-dwh KPI proxy
   components:
     - CMP-PURCHASEKAIKEI-001
     - CMP-PURCHASEKAIKEI-002
     - CMP-PURCHASEKAIKEI-005
     - CMP-PURCHASEKAIKEI-004
+    - CMP-PURCHASEKAIKEI-006
+    - CMP-PURCHASEKAIKEI-007
   libraries:
     - LIB-PURCHASEKAIKEI-001
   contracts:
@@ -28,39 +30,47 @@ plan:
     - CT-API-PURCHASEKAIKEI-004
     - CT-API-PURCHASEKAIKEI-005
     - CT-API-PURCHASEKAIKEI-006
+    - CT-API-PURCHASEKAIKEI-007
+    - CT-API-PURCHASEKAIKEI-008
   test_strategy: 3-layer
 ```
 
 ## Architecture
 
-**v2: 単体完結**。purchase-management（Node.js + Express + JSON 永続化）を土台に、会計エンジン（仕訳台帳・試算表・総勘定元帳）を**内蔵**した 3 層構成。外部 API 連携はない（v1 の kaikei-api HTTP 連携は廃止）。
+**v4: 3 システム連携 + SQLite。** purchase-management（Node.js + Express）を土台に、会計エンジンを**内蔵**し、永続化は SQLite（node:sqlite・依存追加なし）。kaikei-api へは Outbox 方式で仕訳をミラーし、kanri-dwh（管理会計 DWH）の KPI をプロキシ照会する。
 
 ```
-public/ (UI)          server.js (API)                 store/
-index.html      ←→    GET/POST /api/...         ←→    purchase-store.js（購買ドメイン）
-js/app.js             状態遷移ガード                     journal.js（内蔵会計エンジン）
-5 ビュー（会計含む）         │                           data/purchases.json
-                            ▼                          purchases + payables + entries
-                      仕訳は購買の遷移から自動生成        （すべて 1 ファイルに永続化）
+public/ (UI)              server.js (API)                       store/
+index.html          ←→    GET/POST /api/...               ←→    purchase-store.js（購買ドメイン・SQLite 永続化）
+js/app.js                 状態遷移ガード                            journal.js（内蔵会計エンジン）
+6 ビュー（経営DB 含む）         │ │                                 kaikei-client.js（ミラー送信）
+                            │ └─ POST /api/management/* ──→    kanri-client.js（KPI プロキシ）
+                            ▼                                        │
+                      仕訳は購買の遷移から自動生成                      ▼
+                                                  kaikei-api(:8000) →(ETL)→ kanri-dwh(:8100・DuckDB)
 ```
 
-### 会計エンジンの設計方針（v2）
+**データチェーン（v4）**: purchase-kaikei →(仕訳ミラー・Outbox)→ kaikei-api →(ETL・POST /api/etl)→ kanri-dwh →(KPI)→ purchase-kaikei 経営ダッシュボード。どの先が止まっても購買操作は止まらず、チェーンは最終的に収束する（最終一致性）。
 
-- 仕訳（entry）は `{id, date, description, department, lines:[{account_code, side, amount}]}`。data/purchases.json の `entries` 配列に蓄積する（購買データと同一ファイル・同一トランザクションで書き込まれるため、検収/支払と仕訳は必ず整合する）。
+### 会計エンジンの設計方針（v2・v4 で永続化を SQLite に移行）
+
+- 仕訳（entry）は `{id, date, description, department, lines:[{account_code, side, amount}]}`。SQLite の `journal_entries` + `journal_lines` に蓄積する（購買・支払予定・Outbox キューと**同一トランザクション**で書き込まれるため、検収/支払と仕訳は必ず整合する）。
 - 検収 → 借: 仕入高 5110 / 貸: 買掛金 2110。支払 → 借: 買掛金 2110 / 貸: 普通預金 1120。department は申請の部門。
 - 試算表・総勘定元帳は**要求のたびに仕訳台帳から計算**する（保存しない = 計算結果の実体を持たないため、帳簿ずれが構造的に起きない）。
 - 科目マスタは 11 科目固定（kaikei-api と同じ体系）。貸借一致は engine が生成するため必ず保たれる。
 
 ### Components (CMP-*)
 
-- CMP-PURCHASEKAIKEI-001: server.js — Express サーバー。静的配信 + REST API + 遷移ガード + 会計レポート API
-- CMP-PURCHASEKAIKEI-002: store/purchase-store.js — 購買ドメイン層（purchase-management v3 を継承 + 部門 + 仕訳自動計上の呼び出し）
+- CMP-PURCHASEKAIKEI-001: server.js — Express サーバー。静的配信 + REST API + 遷移ガード + 会計レポート API + 連携プロキシ
+- CMP-PURCHASEKAIKEI-002: store/purchase-store.js — 購買ドメイン層（v4: SQLite 永続化 + Outbox + 自動再送タイマー）
 - CMP-PURCHASEKAIKEI-005: store/journal.js — **内蔵会計エンジン**: 仕訳計上（貸借一致チェック）・残高試算表計算・総勘定元帳計算・科目/部門マスタ
-- CMP-PURCHASEKAIKEI-004: public/ — UI（purchase-management の 4 ビュー + 部門選択 + 会計ビュー）
+- CMP-PURCHASEKAIKEI-004: public/ — UI（6 ビュー: ダッシュボード / 新規申請 / 申請一覧 / 支払予定 / 会計 / 経営ダッシュボード）
+- CMP-PURCHASEKAIKEI-006: store/kaikei-client.js + store/kanri-client.js — 連携クライアント（注入可能・テストはスタブ）
+- CMP-PURCHASEKAIKEI-007: data/purchase-kaikei.db — SQLite（7 テーブル: purchases / payables / journal_entries + journal_lines / pending_links / counters / meta）
 
 ### Libraries (LIB-*)
 
-- LIB-PURCHASEKAIKEI-001: express ^4 — HTTP サーバー。依存はこれのみ
+- LIB-PURCHASEKAIKEI-001: express ^4 — HTTP サーバー。npm 依存はこれのみ（v4: SQLite は Node 内蔵の node:sqlite を使用）
 
 ### Contracts (CT-*)
 
@@ -70,6 +80,8 @@ js/app.js             状態遷移ガード                     journal.js（内
 - CT-API-PURCHASEKAIKEI-004: POST /api/purchases/:id/receive — 検収 {receivedQty, receivedAt} → 支払予定計上 + **仕訳 1 件自動計上**（entry id を記録）
 - CT-API-PURCHASEKAIKEI-005: POST /api/payables/:id/pay — 支払実行 → **仕訳 1 件自動計上**（entry id を記録）
 - CT-API-PURCHASEKAIKEI-006: GET /api/accounting/accounts / trial-balance / ledger/:code — **内蔵エンジン**の計算結果を返す（200 のみ。外部依存なし）
+- CT-API-PURCHASEKAIKEI-007（v3/v4）: GET /api/accounting/sync（未同期状態）+ POST /api/accounting/sync（手動再送）— Outbox ミラー連携。kaikei_unavailable は 502
+- CT-API-PURCHASEKAIKEI-008（v4）: GET /api/management/kpi/:name（reconcile / pl-by-department / sales-by-month / expense-by-account / cash-trend の whitelist プロキシ）+ POST /api/management/etl（kanri-dwh の取込起動）— kanri_unavailable / kanri_source_error は 502
 - 共通: 許可外の遷移は 409 {error:"invalid_transition"}、入力不足は 400
 
 ## Test Strategy (3-layer, Tecnos coverage tier)
@@ -78,6 +90,7 @@ js/app.js             状態遷移ガード                     journal.js（内
 
 - TS-UNIT-PURCHASEKAIKEI-001: store の遷移ガード + 部門検証 + 仕訳対応表（借方/貸方/金額/department）— target ≥ 70% coverage for standard
 - TS-UNIT-PURCHASEKAIKEI-002: 会計エンジン — 貸借一致チェック・試算表（全科目・残高 0 含む・貸借一致）・元帳（日付順・残高繰越）・部門/期間フィルタ
+- TS-UNIT-PURCHASEKAIKEI-003（v4）: 自動再送タイマー — 障害復帰後、操作なしで未同期が送信される
 
 ### Integration
 
@@ -87,19 +100,23 @@ js/app.js             状態遷移ガード                     journal.js（内
 - TS-INT-PURCHASEKAIKEI-004: 分割検収 → 支払予定計上 + 仕訳自動計上（entry id 記録）
 - TS-INT-PURCHASEKAIKEI-005: 支払実行 → 仕訳自動計上・entryId 記録・二重支払 409
 - TS-INT-PURCHASEKAIKEI-006: 会計 API — 試算表・元帳・科目一覧が購買操作を反映して返る
+- TS-INT-PURCHASEKAIKEI-007（v3/v4）: ミラー連携（Outbox）— 障害でキュー保持・再送で送信
+- TS-INT-PURCHASEKAIKEI-008/009（v4）: 管理会計プロキシ — KPI 中継・未知 KPI 404・ETL 起動・kanri-dwh 障害 502
+- 永続化（v4）: SQLite 再起動復元 — purchases + payables + entries + キューが保持される
 
 ### E2E
 
 - TS-E2E-PURCHASEKAIKEI-001: 申請→承認→発注→分割検収→支払→試算表/元帳照会のクリティカルジャーニー
+- 実機連携 E2E（v4・手動）: 購買検収 → kaikei-api ミラー → kanri-dwh ETL → KPI 表示（2026-09-11 実施済み・31 仕訳取込・突合一致）
 
 ## Evidence Pack (Final Gate 5 要件)
 
 | Artifact | Status | Note |
 |---|---|---|
 | CI Pass | N/A | 研修ローカル実行のため CI 不使用（node --test で代替） |
-| SAST Pass | DONE | node --test 20 件（手動確認） |
+| SAST Pass | DONE | node --test 28 件（2026-09-11・v4 を含む。stride_test_run でパース済み） |
 | SCA Pass | DONE | npm audit（express のみ・moderate 2 件は研修環境で受容） |
-| Secrets Scan | DONE | シークレットなし（ローカル JSON のみ・キーなし） |
+| Secrets Scan | DONE | シークレットなし（ローカル SQLite のみ・キーなし） |
 | AI Provenance | DONE | 本ファイル + ai-generated label（Claude Code 生成） |
 
 ## Approval boundary
