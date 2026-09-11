@@ -1,0 +1,40 @@
+
+> purchase-kaikei@0.1.0 test
+> node --test test/store.test.js test/api.test.js
+
+✔ TS-INT-001: 申請登録（部門含む）→一覧照会、部門不正は 400 (436.396ms)
+✔ TS-INT-002: 承認 / 却下（comment 必須）/ 再申請 (619.6418ms)
+✔ TS-INT-003: 発注（approved のみ・発注番号採番・他状態は 409） (185.6296ms)
+✔ TS-INT-004: 分割検収 → 支払予定計上 + 仕訳自動計上 (230.64ms)
+✔ TS-INT-005: 支払実行 → 仕訳自動計上・entryId 記録・二重支払 409 (205.1336ms)
+✔ TS-INT-006: 会計 API が購買操作を反映する (200.0193ms)
+✔ TS-E2E-001: 購買会計フロー完走（申請→支払→試算表/元帳照会） (312.6585ms)
+✔ TS-INT-007: ミラー連携 API（Outbox）— 障害でキュー保持・再送で送信 (187.3894ms)
+✔ NFR-002: サーバー再起後も purchases + payables + 仕訳台帳が保持される (173.6043ms)
+✔ TS-INT-008: 管理会計 KPI プロキシ — kanri-dwh の応答をそのまま返す (107.1294ms)
+✔ TS-INT-009: ETL 起動プロキシ — 成功時は報告を返し、kanri-dwh 障害時は 502 (91.4408ms)
+✔ nextMonthEnd: 月末締め翌月末払いの日付計算 (1.4874ms)
+✔ create: 正常登録で状態=submitted、既定部門は D90 (70.585ms)
+✔ create: 部門は D10/D20/D90 のみ (54.4009ms)
+✔ create: 必須項目不足は ValidationError (48.7687ms)
+✔ AC-002-01: 承認は submitted → approved の 1 段（金額に関係なく） (78.284ms)
+✔ AC-002-02/03: 却下は comment 必須、再申請で submitted に戻る (77.987ms)
+✔ AC-003-01: order は approved のみ、発注番号は連番 (67.7171ms)
+✔ AC-004-01/03: 検収ごとに仕訳（借 5110 / 貸 2110）が計上され支払予定が計上される (109.1803ms)
+✔ AC-005-02/03: 支払実行で仕訳（借 2110 / 貸 1120）計上・entryId 記録・二重支払不可 (108.4249ms)
+✔ engine: 貸借不一致・未知科目・不正金額は拒否 (0.6168ms)
+✔ engine: 試算表は 11 科目すべて（残高 0 含む）・貸借一致 (0.4689ms)
+✔ engine: 元帳は日付昇順・残高繰越。貸方科目は逆符号 (0.3247ms)
+✔ engine: 部門フィルタ（department 指定はその部門の仕訳のみ集計） (0.1134ms)
+✔ persistence: 再生成後も purchases + payables + entries（仕訳台帳）が保持される (NFR-002) (106.9098ms)
+✔ AC-007-01: 検収・支払の仕訳が kaikei-api にミラー送信され kaikeiEntryId が記録される (93.9517ms)
+✔ AC-007-02: 障害時はキュー保持で購買は止まらず、復帰後の再送で取り込まれる (530.052ms)
+✔ auto-sync: 検収・支払を待たずとも復帰後に自動再送される (219.3118ms)
+ℹ tests 28
+ℹ suites 0
+ℹ pass 28
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3374.9327
