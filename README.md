@@ -31,7 +31,7 @@ npm start        # → http://localhost:3010（会計エンジン内蔵・これ
 ## kaikei-api ミラー連携（v3・オプション）
 
 - 検収・支払で計上した各仕訳を、**kaikei-api（FastAPI・port 8000）が稼働していれば自動でミラー送信**します（Outbox 方式。内蔵エンジンが常に正本）。
-- kaikei-api が止まっていても**購買操作は一切止まりません**。未送信の仕訳はキューに保持され、会計画面で「未同期 n 件」と表示され、**「未同期を再送信」ボタン**（または次の検収・支払）で復帰後に自動送信されます。
+- kaikei-api が止まっていても**購買操作は一切止まりません**。未送信の仕訳はキューに保持され、**復帰を検知すると自動で再送**します（30 秒間隔の自動再送タイマー＋起動直後の 1 回。検収・支払のたびにも即時送信を試みます）。会計画面で「未同期 n 件」と表示され、**「未同期を再送信」ボタン**の手動再送も可能です。
 - 同期済みの仕訳には kaikei-api 側の採番 id（`kaikeiEntryId`）が記録され、向こうの総勘定元帳でも追跡できます。
 - URL は `KAIKEI_API_URL` 環境変数で変更可（既定 `http://localhost:8000`）。
 
@@ -53,7 +53,7 @@ npm start        # → http://localhost:3010（会計エンジン内蔵・これ
 ## テスト
 
 ```bash
-npm test         # node --test、22 テスト（unit + integration + E2E・外部依存なし）
+npm test         # node --test、26 テスト（unit + integration + E2E・外部依存なし）
 ```
 
 ## SDD 成果物 (specs/purchase-kaikei/)

@@ -561,6 +561,27 @@ class PurchaseStore {
       this.data.lastLinkError = { at: now(), message: err.message };
     }
   }
+
+  /* ---------- 自動再送タイマー ---------- */
+
+  // Outbox キューに残りがある間、定間隔で自動再送する（相手が復帰したら
+  // 検収・支払を待たずに追いつく。unref なのでプロセスの終了を妨げない）
+  startAutoSync(intervalMs = 30_000) {
+    this.stopAutoSync();
+    this._autoSyncTimer = setInterval(() => {
+      if (this.data.pendingLinks.length > 0) this.#trySyncPending();
+    }, intervalMs);
+    this._autoSyncTimer.unref();
+    // 起動直後にも 1 回：前回の未送信分をできるだけ早く回収する
+    if (this.data.pendingLinks.length > 0) this.#trySyncPending();
+  }
+
+  stopAutoSync() {
+    if (this._autoSyncTimer) {
+      clearInterval(this._autoSyncTimer);
+      this._autoSyncTimer = null;
+    }
+  }
 }
 
 module.exports = {

@@ -290,3 +290,26 @@ test('AC-007-02: 障害時はキュー保持で購買は止まらず、復帰後
   assert.equal(store.journal.entries[0].kaikeiEntryId, 500);
   assert.equal(store.journal.entries[1].kaikeiEntryId, 501);
 });
+
+test('auto-sync: 検収・支払を待たずとも復帰後に自動再送される', async () => {
+  const kaikei = stubKaikei();
+  const store = freshStore(kaikei);
+  const p = orderedPurchase(store, { qty: 2, unitPrice: 1000 });
+  kaikei.state.fail = true;
+  store.receive(p.id, '佐藤 (管理担当)', 2, '2026-09-10');
+  assert.equal(store.syncStatus().pending, 1);
+
+  store.startAutoSync(50); // 50ms 間隔で自動再送
+  try {
+    await new Promise((r) => setTimeout(r, 30));
+    kaikei.state.fail = false; // 復帰 → タイマーが自動で回収するはず
+    for (let i = 0; i < 20 && store.syncStatus().pending > 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(store.syncStatus().pending, 0);
+    assert.equal(kaikei.posted.length, 1);
+    assert.equal(store.journal.entries[0].kaikeiEntryId, 500);
+  } finally {
+    store.stopAutoSync();
+  }
+});

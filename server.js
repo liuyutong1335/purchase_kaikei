@@ -119,6 +119,7 @@ function createApp(store) {
 if (require.main === module) {
   const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
   const store = new PurchaseStore(dataDir);
+  store.startAutoSync(); // Outbox 自動再送（30 秒間隔・起動直後にも 1 回）
   const port = process.env.PORT || 3010;
   createApp(store).listen(port, () => {
     console.log(`購買会計システム: http://localhost:${port}（会計エンジン内蔵・単体で完結）`);
