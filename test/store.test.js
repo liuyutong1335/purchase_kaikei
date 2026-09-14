@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { PurchaseStore, TransitionError, ValidationError, nextMonthEnd } = require('../store/purchase-store');
+const { PurchaseStore, TransitionError, ValidationError, SelfApprovalError, nextMonthEnd } = require('../store/purchase-store');
 const { JournalEngine, ACCOUNTS_MASTER } = require('../store/journal');
 const { KaikeiUnavailableError } = require('../store/kaikei-client');
 
@@ -39,8 +39,8 @@ async function freshStore(kaikei) {
 }
 
 async function orderedPurchase(store, { qty = 10, unitPrice = 1000, department } = {}) {
-  const p = await store.create({ item: 'ノートPC', qty, unitPrice, requester: '山田', department });
-  await store.approve(p.id, '鈴木 (部長)', 'OK');
+  const p = await store.create({ item: 'ノートPC', qty, unitPrice, requester: 'u01', department });
+  await store.approve(p.id, 'u02', 'OK');
   await store.order(p.id, '佐藤 (管理担当)');
   return store.get(p.id);
 }
@@ -54,7 +54,7 @@ test('nextMonthEnd: 月末締め翌月末払いの日付計算', () => {
 
 test('create: 正常登録で状態=submitted、既定部門は D90', async () => {
   const store = await freshStore();
-  const p = await store.create({ item: 'ノートPC', qty: 2, unitPrice: 150000, requester: '山田' });
+  const p = await store.create({ item: 'ノートPC', qty: 2, unitPrice: 150000, requester: 'u01' });
   assert.equal(p.status, 'submitted');
   assert.equal(p.department, 'D90'); // AC-001-02
   assert.deepEqual(p.journal, []);
@@ -63,35 +63,237 @@ test('create: 正常登録で状態=submitted、既定部門は D90', async () =
 
 test('create: 部門は D10/D20/D90 のみ', async () => {
   const store = await freshStore();
-  assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'x', department: 'D99' }), ValidationError);
-  const p = await store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'x', department: 'D20' });
+  assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'u01', department: 'D99' }), ValidationError);
+  const p = await store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'u01', department: 'D20' });
   assert.equal(p.department, 'D20');
 });
 
 test('create: 必須項目不足は ValidationError', async () => {
   const store = await freshStore();
-  assert.throws(() => store.create({ qty: 1, unitPrice: 100, requester: 'x' }), ValidationError);
-  assert.throws(() => store.create({ item: 'x', qty: 0, unitPrice: 100, requester: 'x' }), ValidationError);
-  assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: -1, requester: 'x' }), ValidationError);
+  assert.throws(() => store.create({ qty: 1, unitPrice: 100, requester: 'u01' }), ValidationError);
+  assert.throws(() => store.create({ item: 'x', qty: 0, unitPrice: 100, requester: 'u01' }), ValidationError);
+  assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: -1, requester: 'u01' }), ValidationError);
   assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: 100 }), ValidationError);
+});
+
+// v6 ステップ 1: ユーザーマスタ（操作者・ロール）
+test('users: マスタが 4 人シードされ、listUsers で取れる', async () => {
+  const store = await freshStore();
+  const users = store.listUsers();
+  assert.equal(users.length, 4);
+  assert.deepEqual(users.map((u) => u.code).sort(), ['u01', 'u02', 'u03', 'u99']);
+  assert.equal(users.find((u) => u.code === 'u02').role, 'approver');
+});
+
+// v6 ステップ 1: 申請者はユーザーマスタのコードのみ
+test('create: 申請者はユーザーマスタに存在するコードのみ（表記揺れ防止）', async () => {
+  const store = await freshStore();
+  assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: 100, requester: '山田' }), ValidationError);
+  const p = await store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'u01' });
+  assert.equal(p.requester, 'u01');
+});
+
+// v6 ステップ 2: 自己承認禁止
+test('approve: 申請者本人は自分の申請を承認できない（SelfApprovalError）', async () => {
+  const store = await freshStore();
+  const p = await store.create({ item: 'A', qty: 1, unitPrice: 1000, requester: 'u01' });
+  assert.throws(() => store.approve(p.id, 'u01', ''), SelfApprovalError);
+  assert.equal(store.get(p.id).status, 'submitted'); // 状態は動かない
+  await store.approve(p.id, 'u02', ''); // 他人なら承認できる
+  assert.equal(store.get(p.id).status, 'approved');
+});
+
+// v6 ステップ 4: 仕訳一覧（元伝票・申請番号・計上者・API 連携状態）
+test('listEntries: 検収・支払の仕訳がメタデータ付きで一覧でき、条件検索できる', async () => {
+  const store = await freshStore();
+  const p = await orderedPurchase(store, { qty: 2, unitPrice: 5000, department: 'D10' }); // 検収仕訳 1 件
+  const { payable } = await store.receive(p.id, 'u03', 2, '2026-09-10');
+  await store.pay(payable.id, 'u03'); // 支払仕訳 1 件
+
+  const all = store.listEntries();
+  assert.equal(all.length, 2);
+  const receiveEntry = all.find((e) => e.entryType === 'receive');
+  assert.equal(receiveEntry.purchaseId, p.id);
+  assert.equal(receiveEntry.voucherNo, `${p.id}-R1`);
+  assert.equal(receiveEntry.postedBy, 'u03');
+  assert.equal(receiveEntry.debitAccount, '5110 仕入高');
+  assert.equal(receiveEntry.creditAccount, '2110 買掛金');
+  assert.equal(receiveEntry.amount, 10000);
+  assert.equal(receiveEntry.status, 'active');
+  const payEntry = all.find((e) => e.entryType === 'pay');
+  assert.equal(payEntry.voucherNo, payable.id); // 元伝票 = 支払予定
+  assert.equal(payEntry.creditAccount, '1120 普通預金');
+
+  // 検索: 科目・摘要・API 連携状態
+  assert.equal(store.listEntries({ account: '1120' }).length, 1); // 普通預金を含むのは支払のみ
+  assert.equal(store.listEntries({ q: 'PU-0001' }).length, 2); // 申請番号で 2 件
+  assert.equal(store.listEntries({ state: 'linked' }).length, 2); // スタブが正常送信 → 自動同期済み
+  assert.equal(store.listEntries({ state: 'unlinked' }).length, 0);
+});
+
+test('getEntry: 元申請（変更履歴付き）を逆リンクできる', async () => {
+  const store = await freshStore();
+  const p = await store.create({ item: 'A', qty: 1, unitPrice: 1000, requester: 'u01' });
+  await store.withdraw(p.id, 'u01');
+  await store.update(p.id, 'u01', { qty: 2 }, '数量修正');
+  await store.resubmit(p.id, 'u01');
+  await store.approve(p.id, 'u02', '');
+  await store.order(p.id, 'u03');
+  const { payable } = await store.receive(p.id, 'u03', 2, '2026-09-10');
+
+  const entry = store.getEntry(store.listEntries()[0].id);
+  assert.equal(entry.purchase.id, p.id);
+  assert.equal(entry.purchase.item, 'A');
+  assert.equal(entry.purchase.changeHistory.length, 1); // withdrawn 時の修正履歴が見える
+  assert.equal(entry.purchase.changeHistory[0].reason, '数量修正');
+});
+
+// v6 ステップ 3: 取下げ → 修正 → 再申請
+test('withdraw: submitted → withdrawn は本人のみ。他人は不可', async () => {
+  const store = await freshStore();
+  const p = await store.create({ item: 'A', qty: 1, unitPrice: 1000, requester: 'u01' });
+  assert.throws(() => store.withdraw(p.id, 'u02'), ValidationError); // 他人は取下げ不可
+  await store.withdraw(p.id, 'u01');
+  assert.equal(store.get(p.id).status, 'withdrawn');
+  assert.throws(() => store.withdraw(p.id, 'u01'), TransitionError); // 二重取下げ不可
+});
+
+test('update: withdrawn/rejected は修正のみ・approved は変更申請で再承認へ・ordered は履歴のみ・received は不可', async () => {
+  const store = await freshStore();
+  // withdrawn: 修正できる（状態は動かない・change_history に記録）
+  const p1 = await store.create({ item: 'A', qty: 1, unitPrice: 1000, requester: 'u01' });
+  await store.withdraw(p1.id, 'u01');
+  const beforeAt = p1.createdAt;
+  await store.update(p1.id, 'u01', { qty: 3 }, '数量の誤り修正');
+  const p1b = store.get(p1.id);
+  assert.equal(p1b.status, 'withdrawn'); // 状態は動かない
+  assert.equal(p1b.qty, 3);
+  assert.equal(p1b.amount, 3000); // 金額も再計算
+  assert.equal(p1b.changeHistory.length, 1);
+  assert.deepEqual(p1b.changeHistory[0].changes, [
+    { field: 'qty', before: 1, after: 3 },
+    { field: 'amount', before: 1000, after: 3000 }, // 金額は数量×単価で連動再計算
+  ]);
+  assert.equal(p1b.changeHistory[0].actor, 'u01');
+  assert.equal(p1b.createdAt, beforeAt); // createdAt は不変
+  await store.resubmit(p1.id, 'u01');
+  assert.equal(store.get(p1.id).status, 'submitted');
+
+  // approved: 変更申請 → submitted に戻る（再承認を経る）
+  const p2 = await store.create({ item: 'A', qty: 1, unitPrice: 1000, requester: 'u01' });
+  await store.approve(p2.id, 'u02', '');
+  await store.update(p2.id, 'u01', { item: 'A改' }, '品目名修正');
+  const p2b = store.get(p2.id);
+  assert.equal(p2b.status, 'submitted'); // 再承認を経る
+  assert.equal(p2b.item, 'A改');
+
+  // ordered: 直接上書きせず変更履歴のみ（状態維持）
+  await store.approve(p2.id, 'u02', '');
+  await store.order(p2.id, 'u03');
+  await store.update(p2.id, 'u01', { note: '納期確認済' }, '備考追記');
+  const p2c = store.get(p2.id);
+  assert.equal(p2c.status, 'ordered');
+  assert.equal(p2c.note, '納期確認済');
+  assert.equal(p2c.changeHistory.length, 2);
+
+  // received: 変更不可（訂正は取消仕訳フロー）
+  const { payable } = await store.receive(p2.id, 'u03', 1, '2026-09-10');
+  await assert.rejects(() => store.update(p2.id, 'u01', { note: 'x' }, '理由'), TransitionError);
+  await store.pay(payable.id, 'u03'); // 支払済みも同様に不可（ここでは状態確認のみ）
+  await assert.rejects(() => store.update(p2.id, 'u01', { note: 'y' }, '理由'), TransitionError);
+});
+
+test('update: 理由必須・変更なしは不可', async () => {
+  const store = await freshStore();
+  const p = await store.create({ item: 'A', qty: 1, unitPrice: 1000, requester: 'u01' });
+  await store.withdraw(p.id, 'u01');
+  await assert.rejects(() => store.update(p.id, 'u01', { qty: 2 }, ''), ValidationError); // 理由必須
+  await assert.rejects(() => store.update(p.id, 'u01', { note: '' }, '備考だけ変更')); // 変更なし
+  await assert.rejects(() => store.update(p.id, 'u01', { qty: 0 }, '理由'), ValidationError); // 不正値
+});
+
+// v6 ステップ 5: 訂正申請 → 承認 → 取消仕訳 → 訂正仕訳で再計上
+test('correction: received の単価訂正が 取消仕訳 + 訂正仕訳 で反映される（元・取消・訂正すべて残る）', async () => {
+  const store = await freshStore();
+  const p = await orderedPurchase(store, { qty: 1, unitPrice: 100000 }); // 検収仕訳: 仕入高 100,000 / 買掛金 100,000
+  const { payable } = await store.receive(p.id, 'u03', 1, '2026-09-10');
+  assert.equal(store.listEntries().length, 1);
+
+  // 訂正申請（単価 100,000 → 80,000）
+  await store.requestCorrection(p.id, 'u01', { unitPrice: 80000 }, '単価の誤り');
+  assert.equal(store.get(p.id).status, 'correction_pending');
+
+  // 自己承認は不可・却下せず承認すると 再計上まで一括で走る
+  await assert.rejects(() => store.approveCorrection(p.id, 'u01'), SelfApprovalError);
+  await store.approveCorrection(p.id, 'u02');
+
+  const entries = store.listEntries();
+  // 元仕訳 + 取消仕訳 + 訂正仕訳 の 3 件すべてが残る（直接編集・削除はしていない）
+  assert.equal(entries.length, 3);
+  const original = entries.find((e) => e.id === 1);
+  const reversal = entries.find((e) => e.entryType === 'reversal');
+  const corrected = entries.find((e) => e.entryType === 'correction');
+
+  assert.equal(original.status, 'reversed'); // 元仕訳は取消済み
+  assert.equal(original.reversedBy, reversal.id);
+  // 取消仕訳: 貸借入替（買掛金 100,000 / 仕入高 100,000）
+  assert.deepEqual(reversal.lines, [
+    { account_code: '5110', side: 'credit', amount: 100000 },
+    { account_code: '2110', side: 'debit', amount: 100000 },
+  ]);
+  assert.equal(reversal.reversesEntryId, 1);
+  // 訂正仕訳: 正しい金額（80,000）で再計上
+  assert.deepEqual(corrected.lines, [
+    { account_code: '5110', side: 'debit', amount: 80000 },
+    { account_code: '2110', side: 'credit', amount: 80000 },
+  ]);
+  assert.equal(corrected.voucherNo, `${p.id}-CORR`);
+
+  // 購買は received に戻り、支払予定・試算表も訂正後の金額に揃う
+  assert.equal(store.get(p.id).status, 'received');
+  assert.equal(store.listPayables().find((y) => y.id === payable.id).amount, 80000);
+  const tb = store.journal.trialBalance();
+  const shire = tb.rows.find((r) => r.account_code === '5110');
+  assert.equal(shire.debit_balance, 80000); // 100,000 - 100,000 + 80,000
+});
+
+test('correction: paid の購買は支払仕訳も取消・再計上される', async () => {
+  const store = await freshStore();
+  const p = await orderedPurchase(store, { qty: 1, unitPrice: 1000 });
+  const { payable } = await store.receive(p.id, 'u03', 1, '2026-09-10');
+  await store.pay(payable.id, 'u03');
+  assert.equal(store.get(p.id).status, 'paid');
+
+  await store.requestCorrection(p.id, 'u01', { unitPrice: 500 }, '金額訂正');
+  await store.approveCorrection(p.id, 'u02');
+
+  const entries = store.listEntries();
+  // 検収 + 支払 ×（元 + 取消）+ 訂正（検収 + 支払）= 6 件
+  assert.equal(entries.length, 6);
+  assert.equal(entries.filter((e) => e.entryType === 'reversal').length, 2);
+  assert.equal(entries.filter((e) => e.entryType === 'correction').length, 2);
+  assert.equal(store.get(p.id).status, 'paid'); // 元の状態へ戻る
+  const tb = store.journal.trialBalance();
+  const bank = tb.rows.find((r) => r.account_code === '1120');
+  assert.equal(bank.debit_balance, -500); // 普通預金は借方残高: -1,000 +1,000 -500（支出方向）
 });
 
 test('AC-002-01: 承認は submitted → approved の 1 段（金額に関係なく）', async () => {
   const store = await freshStore();
-  const p1 = await store.create({ item: 'A', qty: 2, unitPrice: 50000, requester: '山田' }); // 10万
-  const p2 = await store.create({ item: 'B', qty: 1, unitPrice: 990000, requester: '山田' }); // 99万でも 1 段
-  await store.approve(p1.id, '鈴木 (部長)', '');
-  await store.approve(p2.id, '鈴木 (部長)', '');
+  const p1 = await store.create({ item: 'A', qty: 2, unitPrice: 50000, requester: 'u01' }); // 10万
+  const p2 = await store.create({ item: 'B', qty: 1, unitPrice: 990000, requester: 'u01' }); // 99万でも 1 段
+  await store.approve(p1.id, 'u02', '');
+  await store.approve(p2.id, 'u02', '');
   assert.equal(store.get(p1.id).status, 'approved');
   assert.equal(store.get(p2.id).status, 'approved');
-  assert.throws(() => store.approve(p1.id, '鈴木 (部長)', ''), TransitionError);
+  assert.throws(() => store.approve(p1.id, 'u02', ''), TransitionError);
 });
 
 test('AC-002-02/03: 却下は comment 必須、再申請で submitted に戻る', async () => {
   const store = await freshStore();
-  const p = await store.create({ item: 'A', qty: 1, unitPrice: 150000, requester: '山田' });
-  assert.throws(() => store.reject(p.id, '鈴木 (部長)', ''), ValidationError);
-  await store.reject(p.id, '鈴木 (部長)', '予算超過');
+  const p = await store.create({ item: 'A', qty: 1, unitPrice: 150000, requester: 'u01' });
+  assert.throws(() => store.reject(p.id, 'u02', ''), ValidationError);
+  await store.reject(p.id, 'u02', '予算超過');
   assert.equal(store.get(p.id).status, 'rejected');
   await store.resubmit(p.id, '山田 (申請者)', '単価を見直し再申請');
   assert.equal(store.get(p.id).status, 'submitted');
@@ -100,9 +302,9 @@ test('AC-002-02/03: 却下は comment 必須、再申請で submitted に戻る'
 
 test('AC-003-01: order は approved のみ、発注番号は連番', async () => {
   const store = await freshStore();
-  const p1 = await store.create({ item: 'A', qty: 1, unitPrice: 50000, requester: '山田' });
+  const p1 = await store.create({ item: 'A', qty: 1, unitPrice: 50000, requester: 'u01' });
   assert.throws(() => store.order(p1.id, '佐藤 (管理担当)'), TransitionError); // submitted からの発注
-  await store.approve(p1.id, '鈴木 (部長)', '');
+  await store.approve(p1.id, 'u02', '');
   await store.order(p1.id, '佐藤 (管理担当)');
   const year = new Date().getFullYear();
   assert.equal(store.get(p1.id).orderNo, `PO-${year}-001`);
@@ -238,15 +440,15 @@ test('engine: 部門フィルタ（department 指定はその部門の仕訳の�
 test('persistence: 再生成後も purchases + payables + entries（仕訳台帳）が保持される (NFR-002)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-store-'));
   const store = await PurchaseStore.create(dir, stubKaikei(), { fresh: true });
-  const p = await store.create({ item: 'モニタ', qty: 2, unitPrice: 30000, requester: '山田', department: 'D10' });
-  await store.approve(p.id, '鈴木 (部長)', 'OK');
+  const p = await store.create({ item: 'モニタ', qty: 2, unitPrice: 30000, requester: 'u01', department: 'D10' });
+  await store.approve(p.id, 'u02', 'OK');
   await store.order(p.id, '佐藤 (管理担当)');
   const { payable } = await store.receive(p.id, '佐藤 (管理担当)', 2, '2026-09-10');
   await store.pay(payable.id, '佐藤 (管理担当)');
   await store.syncPending(); // ミラー送信を確定的に完了させる
 
   const reloaded = await PurchaseStore.create(dir, stubKaikei());
-  assert.equal(reloaded.get(p.id).status, 'received');
+  assert.equal(reloaded.get(p.id).status, 'paid');
   assert.equal(reloaded.get(p.id).department, 'D10');
   assert.equal(reloaded.get(p.id).journal.length, 2); // 検収 + 支払の仕訳参照
   assert.equal(reloaded.journal.entries.length, 2); // 仕訳台帳も保持
@@ -283,7 +485,7 @@ test('AC-007-02: 障害時はキュー保持で購買は止まらず、復帰後
   // 障害中でも検収・支払は普通に成功する（v1 との決定的な違い）
   const { payable } = await store.receive(p.id, '佐藤 (管理担当)', 5, '2026-09-10');
   await store.pay(payable.id, '佐藤 (管理担当)');
-  assert.equal(store.get(p.id).status, 'received');
+  assert.equal(store.get(p.id).status, 'paid');
   assert.equal(store.syncStatus().pending, 2); // 2 件がキューに保持
 
   await store.syncPending(); // 障害中の再送 → 減らない
