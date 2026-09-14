@@ -1,5 +1,9 @@
 'use strict';
 // TS-INT-PURCHASEKAIKEI-001..006 + TS-E2E-PURCHASEKAIKEI-001（v2: 内蔵会計エンジン・外部依存なし）
+// v5: store が非同期（PostgreSQL）になったため startServer も async 化。
+//     store.test.js と並列実行されるため、DB はこのファイル専用の purchase_test_api を使う。
+process.env.PG_DATABASE = process.env.PG_DATABASE || 'purchase_test_api';
+process.env.PG_PASSWORD = process.env.PG_PASSWORD || 'pk-training-2026';
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -7,6 +11,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { createApp, PurchaseStore } = require('../server');
 const { KaikeiUnavailableError } = require('../store/kaikei-client');
+
+// pg 接続を開きっぱなしにすると node --test のプロセスが終わらないため最後に全 close
+test.after(async () => { await PurchaseStore.closeAll(); });
 
 // モック kaikei クライアント（テストが実ネットワークに流れないように注入する）
 function stubKaikei({ fail = false } = {}) {
@@ -25,10 +32,10 @@ function stubKaikei({ fail = false } = {}) {
   };
 }
 
-async function startServer({ kaikeiFail = true, kanri } = {}) {
+async function startServer({ kaikeiFail = true, kanri, fresh = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-api-'));
   const kaikei = stubKaikei({ fail: kaikeiFail });
-  const app = createApp(new PurchaseStore(dir, kaikei), kanri);
+  const app = createApp(await PurchaseStore.create(dir, kaikei, { fresh }), kanri);
   const server = app.listen(0);
   const base = `http://127.0.0.1:${server.address().port}`;
   return { server, base, kaikei };
@@ -250,7 +257,7 @@ test('TS-INT-007: ミラー連携 API（Outbox）— 障害でキュー保持・
 
 test('NFR-002: サーバー再起後も purchases + payables + 仕訳台帳が保持される', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-persist-'));
-  const app1 = createApp(new PurchaseStore(dir, stubKaikei({ fail: true })));
+  const app1 = createApp(await PurchaseStore.create(dir, stubKaikei({ fail: true }), { fresh: true }));
   const s1 = app1.listen(0);
   const base1 = `http://127.0.0.1:${s1.address().port}`;
   const p = await createPurchase(base1, { item: '永続化チェック', qty: 1, unitPrice: 50000 });
@@ -259,7 +266,7 @@ test('NFR-002: サーバー再起後も purchases + payables + 仕訳台帳が�
   await post(base1, `/api/purchases/${p.id}/receive`, { actor: '佐藤 (管理担当)', receivedQty: 1, receivedAt: '2026-09-10' });
   await new Promise((r) => s1.close(r));
 
-  const app2 = createApp(new PurchaseStore(dir));
+  const app2 = createApp(await PurchaseStore.create(dir, stubKaikei()));
   const s2 = app2.listen(0);
   const base2 = `http://127.0.0.1:${s2.address().port}`;
   try {

@@ -1,5 +1,9 @@
 'use strict';
 // TS-UNIT-PURCHASEKAIKEI-001/002: store の遷移ガード + 部門検証 + 内蔵会計エンジンの unit テスト（v2）
+// v5: store が非同期（PostgreSQL）になったため全テストを async 化。
+//     他のテストファイルと並列実行されるため、DB はこのファイル専用の purchase_test_store を使う。
+process.env.PG_DATABASE = process.env.PG_DATABASE || 'purchase_test_store';
+process.env.PG_PASSWORD = process.env.PG_PASSWORD || 'pk-training-2026';
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -8,6 +12,9 @@ const path = require('node:path');
 const { PurchaseStore, TransitionError, ValidationError, nextMonthEnd } = require('../store/purchase-store');
 const { JournalEngine, ACCOUNTS_MASTER } = require('../store/journal');
 const { KaikeiUnavailableError } = require('../store/kaikei-client');
+
+// pg 接続を開きっぱなしにすると node --test のプロセスが終わらないため最後に全 close
+test.after(async () => { await PurchaseStore.closeAll(); });
 
 // モック kaikei クライアント（v3 ミラー連携のテスト用）: fail で障害を再現
 function stubKaikei() {
@@ -26,15 +33,15 @@ function stubKaikei() {
   };
 }
 
-function freshStore(kaikei) {
+async function freshStore(kaikei) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-store-'));
-  return new PurchaseStore(dir, kaikei || stubKaikei());
+  return PurchaseStore.create(dir, kaikei || stubKaikei(), { fresh: true });
 }
 
-function orderedPurchase(store, { qty = 10, unitPrice = 1000, department } = {}) {
-  const p = store.create({ item: 'ノートPC', qty, unitPrice, requester: '山田', department });
-  store.approve(p.id, '鈴木 (部長)', 'OK');
-  store.order(p.id, '佐藤 (管理担当)');
+async function orderedPurchase(store, { qty = 10, unitPrice = 1000, department } = {}) {
+  const p = await store.create({ item: 'ノートPC', qty, unitPrice, requester: '山田', department });
+  await store.approve(p.id, '鈴木 (部長)', 'OK');
+  await store.order(p.id, '佐藤 (管理担当)');
   return store.get(p.id);
 }
 
@@ -45,67 +52,67 @@ test('nextMonthEnd: 月末締め翌月末払いの日付計算', () => {
   assert.equal(nextMonthEnd('2026-12-05'), '2027-01-31'); // 年跨ぎ
 });
 
-test('create: 正常登録で状態=submitted、既定部門は D90', () => {
-  const store = freshStore();
-  const p = store.create({ item: 'ノートPC', qty: 2, unitPrice: 150000, requester: '山田' });
+test('create: 正常登録で状態=submitted、既定部門は D90', async () => {
+  const store = await freshStore();
+  const p = await store.create({ item: 'ノートPC', qty: 2, unitPrice: 150000, requester: '山田' });
   assert.equal(p.status, 'submitted');
   assert.equal(p.department, 'D90'); // AC-001-02
   assert.deepEqual(p.journal, []);
   assert.equal(p.history.length, 1);
 });
 
-test('create: 部門は D10/D20/D90 のみ', () => {
-  const store = freshStore();
+test('create: 部門は D10/D20/D90 のみ', async () => {
+  const store = await freshStore();
   assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'x', department: 'D99' }), ValidationError);
-  const p = store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'x', department: 'D20' });
+  const p = await store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'x', department: 'D20' });
   assert.equal(p.department, 'D20');
 });
 
-test('create: 必須項目不足は ValidationError', () => {
-  const store = freshStore();
+test('create: 必須項目不足は ValidationError', async () => {
+  const store = await freshStore();
   assert.throws(() => store.create({ qty: 1, unitPrice: 100, requester: 'x' }), ValidationError);
   assert.throws(() => store.create({ item: 'x', qty: 0, unitPrice: 100, requester: 'x' }), ValidationError);
   assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: -1, requester: 'x' }), ValidationError);
   assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: 100 }), ValidationError);
 });
 
-test('AC-002-01: 承認は submitted → approved の 1 段（金額に関係なく）', () => {
-  const store = freshStore();
-  const p1 = store.create({ item: 'A', qty: 2, unitPrice: 50000, requester: '山田' }); // 10万
-  const p2 = store.create({ item: 'B', qty: 1, unitPrice: 990000, requester: '山田' }); // 99万でも 1 段
-  store.approve(p1.id, '鈴木 (部長)', '');
-  store.approve(p2.id, '鈴木 (部長)', '');
+test('AC-002-01: 承認は submitted → approved の 1 段（金額に関係なく）', async () => {
+  const store = await freshStore();
+  const p1 = await store.create({ item: 'A', qty: 2, unitPrice: 50000, requester: '山田' }); // 10万
+  const p2 = await store.create({ item: 'B', qty: 1, unitPrice: 990000, requester: '山田' }); // 99万でも 1 段
+  await store.approve(p1.id, '鈴木 (部長)', '');
+  await store.approve(p2.id, '鈴木 (部長)', '');
   assert.equal(store.get(p1.id).status, 'approved');
   assert.equal(store.get(p2.id).status, 'approved');
   assert.throws(() => store.approve(p1.id, '鈴木 (部長)', ''), TransitionError);
 });
 
-test('AC-002-02/03: 却下は comment 必須、再申請で submitted に戻る', () => {
-  const store = freshStore();
-  const p = store.create({ item: 'A', qty: 1, unitPrice: 150000, requester: '山田' });
+test('AC-002-02/03: 却下は comment 必須、再申請で submitted に戻る', async () => {
+  const store = await freshStore();
+  const p = await store.create({ item: 'A', qty: 1, unitPrice: 150000, requester: '山田' });
   assert.throws(() => store.reject(p.id, '鈴木 (部長)', ''), ValidationError);
-  store.reject(p.id, '鈴木 (部長)', '予算超過');
+  await store.reject(p.id, '鈴木 (部長)', '予算超過');
   assert.equal(store.get(p.id).status, 'rejected');
-  store.resubmit(p.id, '山田 (申請者)', '単価を見直し再申請');
+  await store.resubmit(p.id, '山田 (申請者)', '単価を見直し再申請');
   assert.equal(store.get(p.id).status, 'submitted');
   assert.ok(store.get(p.id).history.some((h) => h.to === 'rejected' && h.comment === '予算超過'));
 });
 
-test('AC-003-01: order は approved のみ、発注番号は連番', () => {
-  const store = freshStore();
-  const p1 = store.create({ item: 'A', qty: 1, unitPrice: 50000, requester: '山田' });
+test('AC-003-01: order は approved のみ、発注番号は連番', async () => {
+  const store = await freshStore();
+  const p1 = await store.create({ item: 'A', qty: 1, unitPrice: 50000, requester: '山田' });
   assert.throws(() => store.order(p1.id, '佐藤 (管理担当)'), TransitionError); // submitted からの発注
-  store.approve(p1.id, '鈴木 (部長)', '');
-  store.order(p1.id, '佐藤 (管理担当)');
+  await store.approve(p1.id, '鈴木 (部長)', '');
+  await store.order(p1.id, '佐藤 (管理担当)');
   const year = new Date().getFullYear();
   assert.equal(store.get(p1.id).orderNo, `PO-${year}-001`);
 });
 
-test('AC-004-01/03: 検収ごとに仕訳（借 5110 / 貸 2110）が計上され支払予定が計上される', () => {
-  const store = freshStore();
-  const p = orderedPurchase(store, { qty: 10, unitPrice: 1000, department: 'D20' });
+test('AC-004-01/03: 検収ごとに仕訳（借 5110 / 貸 2110）が計上され支払予定が計上される', async () => {
+  const store = await freshStore();
+  const p = await orderedPurchase(store, { qty: 10, unitPrice: 1000, department: 'D20' });
 
-  const { purchase, payable } = store.receive(p.id, '佐藤 (管理担当)', 4, '2026-09-10');
+  const { purchase, payable } = await store.receive(p.id, '佐藤 (管理担当)', 4, '2026-09-10');
   assert.equal(store.get(p.id).receivedTotal, 4);
 
   // 仕訳対応表: 借方 仕入高 5110 / 貸方 買掛金 2110、金額 = 検収数量 × 単価、部門引き継ぎ
@@ -131,18 +138,18 @@ test('AC-004-01/03: 検収ごとに仕訳（借 5110 / 貸 2110）が計上さ�
   // 残 6 を超える 7 個目は拒否
   assert.throws(() => store.receive(p.id, '佐藤 (管理担当)', 7), ValidationError);
 
-  store.receive(p.id, '佐藤 (管理担当)', 6, '2026-09-20');
+  await store.receive(p.id, '佐藤 (管理担当)', 6, '2026-09-20');
   assert.equal(store.get(p.id).status, 'received'); // AC-004-02 全量検収済
   assert.equal(store.listPayables().length, 2);
   assert.equal(store.journal.entries.length, 2);
 });
 
-test('AC-005-02/03: 支払実行で仕訳（借 2110 / 貸 1120）計上・entryId 記録・二重支払不可', () => {
-  const store = freshStore();
-  const p = orderedPurchase(store, { qty: 1, unitPrice: 1000, department: 'D90' });
-  const { payable } = store.receive(p.id, '佐藤 (管理担当)', 1, '2026-09-10');
+test('AC-005-02/03: 支払実行で仕訳（借 2110 / 貸 1120）計上・entryId 記録・二重支払不可', async () => {
+  const store = await freshStore();
+  const p = await orderedPurchase(store, { qty: 1, unitPrice: 1000, department: 'D90' });
+  const { payable } = await store.receive(p.id, '佐藤 (管理担当)', 1, '2026-09-10');
 
-  const paid = store.pay(payable.id, '佐藤 (管理担当)');
+  const paid = await store.pay(payable.id, '佐藤 (管理担当)');
   assert.equal(paid.status, 'paid');
   assert.equal(paid.entryId, 2);
   const payEntry = store.journal.entries[1];
@@ -152,7 +159,7 @@ test('AC-005-02/03: 支払実行で仕訳（借 2110 / 貸 1120）計上・entry
   ]);
   assert.equal(payEntry.department, 'D90');
   assert.throws(() => store.pay(payable.id, '佐藤 (管理担当)'), TransitionError); // 2 重支払
-  assert.throws(() => store.pay('PAY-9999', '佐藤 (管理担当)'), Error);
+  assert.throws(() => store.pay('PAY-9999', '佐藤 (管理担当)'), Error); // 存在しない支払予定（pay は同期メソッド）
 });
 
 /* ---------- 内蔵会計エンジン（TS-UNIT-002） ---------- */
@@ -230,15 +237,15 @@ test('engine: 部門フィルタ（department 指定はその部門の仕訳の�
 
 test('persistence: 再生成後も purchases + payables + entries（仕訳台帳）が保持される (NFR-002)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-store-'));
-  const store = new PurchaseStore(dir, stubKaikei());
-  const p = store.create({ item: 'モニタ', qty: 2, unitPrice: 30000, requester: '山田', department: 'D10' });
-  store.approve(p.id, '鈴木 (部長)', 'OK');
-  store.order(p.id, '佐藤 (管理担当)');
-  const { payable } = store.receive(p.id, '佐藤 (管理担当)', 2, '2026-09-10');
-  store.pay(payable.id, '佐藤 (管理担当)');
+  const store = await PurchaseStore.create(dir, stubKaikei(), { fresh: true });
+  const p = await store.create({ item: 'モニタ', qty: 2, unitPrice: 30000, requester: '山田', department: 'D10' });
+  await store.approve(p.id, '鈴木 (部長)', 'OK');
+  await store.order(p.id, '佐藤 (管理担当)');
+  const { payable } = await store.receive(p.id, '佐藤 (管理担当)', 2, '2026-09-10');
+  await store.pay(payable.id, '佐藤 (管理担当)');
   await store.syncPending(); // ミラー送信を確定的に完了させる
 
-  const reloaded = new PurchaseStore(dir, stubKaikei());
+  const reloaded = await PurchaseStore.create(dir, stubKaikei());
   assert.equal(reloaded.get(p.id).status, 'received');
   assert.equal(reloaded.get(p.id).department, 'D10');
   assert.equal(reloaded.get(p.id).journal.length, 2); // 検収 + 支払の仕訳参照
@@ -251,8 +258,8 @@ test('persistence: 再生成後も purchases + payables + entries（仕訳台帳
 
 test('AC-007-01: 検収・支払の仕訳が kaikei-api にミラー送信され kaikeiEntryId が記録される', async () => {
   const kaikei = stubKaikei();
-  const store = freshStore(kaikei);
-  const p = orderedPurchase(store, { qty: 5, unitPrice: 1000, department: 'D20' });
+  const store = await freshStore(kaikei);
+  const p = await orderedPurchase(store, { qty: 5, unitPrice: 1000, department: 'D20' });
 
   await store.receive(p.id, '佐藤 (管理担当)', 5, '2026-09-10');
   await store.syncPending();
@@ -269,13 +276,13 @@ test('AC-007-01: 検収・支払の仕訳が kaikei-api にミラー送信され
 
 test('AC-007-02: 障害時はキュー保持で購買は止まらず、復帰後の再送で取り込まれる', async () => {
   const kaikei = stubKaikei();
-  const store = freshStore(kaikei);
-  const p = orderedPurchase(store, { qty: 5, unitPrice: 1000 });
+  const store = await freshStore(kaikei);
+  const p = await orderedPurchase(store, { qty: 5, unitPrice: 1000 });
   kaikei.state.fail = true;
 
   // 障害中でも検収・支払は普通に成功する（v1 との決定的な違い）
-  const { payable } = store.receive(p.id, '佐藤 (管理担当)', 5, '2026-09-10');
-  store.pay(payable.id, '佐藤 (管理担当)');
+  const { payable } = await store.receive(p.id, '佐藤 (管理担当)', 5, '2026-09-10');
+  await store.pay(payable.id, '佐藤 (管理担当)');
   assert.equal(store.get(p.id).status, 'received');
   assert.equal(store.syncStatus().pending, 2); // 2 件がキューに保持
 
@@ -293,10 +300,10 @@ test('AC-007-02: 障害時はキュー保持で購買は止まらず、復帰後
 
 test('auto-sync: 検収・支払を待たずとも復帰後に自動再送される', async () => {
   const kaikei = stubKaikei();
-  const store = freshStore(kaikei);
-  const p = orderedPurchase(store, { qty: 2, unitPrice: 1000 });
+  const store = await freshStore(kaikei);
+  const p = await orderedPurchase(store, { qty: 2, unitPrice: 1000 });
   kaikei.state.fail = true;
-  store.receive(p.id, '佐藤 (管理担当)', 2, '2026-09-10');
+  await store.receive(p.id, '佐藤 (管理担当)', 2, '2026-09-10');
   assert.equal(store.syncStatus().pending, 1);
 
   store.startAutoSync(50); // 50ms 間隔で自動再送

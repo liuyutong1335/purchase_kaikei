@@ -1,5 +1,6 @@
 'use strict';
 // CMP-PURCHASEKAIKEI-001: Express サーバー — 静的配信 + REST API + 遷移ガード + 内蔵会計エンジン
+// v5: store が非同期（PostgreSQL）になったため全ハンドラを async 化。API 契約は v4 までと不変。
 const path = require('path');
 const express = require('express');
 const { PurchaseStore, TransitionError, ValidationError } = require('./store/purchase-store');
@@ -30,9 +31,9 @@ function createApp(store, kanri) {
   };
 
   // CT-API-PURCHASEKAIKEI-001: 申請登録（部門付き）
-  app.post('/api/purchases', (req, res) => {
+  app.post('/api/purchases', async (req, res) => {
     try {
-      res.status(201).json(store.create(req.body || {}));
+      res.status(201).json(await store.create(req.body || {}));
     } catch (err) {
       handleError(err, res);
     }
@@ -62,9 +63,9 @@ function createApp(store, kanri) {
   };
 
   for (const [action, run] of Object.entries(actions)) {
-    app.post(`/api/purchases/:id/${action}`, (req, res) => {
+    app.post(`/api/purchases/:id/${action}`, async (req, res) => {
       try {
-        res.json(run(req.params.id, req.body || {}));
+        res.json(await run(req.params.id, req.body || {}));
       } catch (err) {
         handleError(err, res);
       }
@@ -76,9 +77,9 @@ function createApp(store, kanri) {
     res.json(store.listPayables(req.query.status));
   });
 
-  app.post('/api/payables/:id/pay', (req, res) => {
+  app.post('/api/payables/:id/pay', async (req, res) => {
     try {
-      res.json(store.pay(req.params.id, (req.body || {}).actor, (req.body || {}).comment));
+      res.json(await store.pay(req.params.id, (req.body || {}).actor, (req.body || {}).comment));
     } catch (err) {
       handleError(err, res);
     }
@@ -146,15 +147,20 @@ function createApp(store, kanri) {
 
 if (require.main === module) {
   const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
-  const store = new PurchaseStore(dataDir);
-  store.startAutoSync(); // Outbox 自動再送（30 秒間隔・起動直後にも 1 回）
   const port = process.env.PORT || 3010;
-  createApp(store).listen(port, () => {
-    console.log(`購買会計システム: http://localhost:${port}（会計エンジン内蔵・単体で完結）`);
-    if (process.env.NO_OPEN !== '1') {
-      const { exec } = require('node:child_process');
-      exec(`start "" http://localhost:${port}`, { shell: 'cmd.exe' }, () => {});
-    }
+  (async () => {
+    const store = await PurchaseStore.create(dataDir);
+    store.startAutoSync(); // Outbox 自動再送（30 秒間隔・起動直後にも 1 回）
+    createApp(store).listen(port, () => {
+      console.log(`購買会計システム: http://localhost:${port}（会計エンジン内蔵・PostgreSQL: ${process.env.PG_DATABASE || 'purchase'}）`);
+      if (process.env.NO_OPEN !== '1') {
+        const { exec } = require('node:child_process');
+        exec(`start "" http://localhost:${port}`, { shell: 'cmd.exe' }, () => {});
+      }
+    });
+  })().catch((err) => {
+    console.error('[ERROR] 起動に失敗しました（PostgreSQL の接続情報を .env で確認してください）:', err.message);
+    process.exit(1);
   });
 }
 

@@ -19,6 +19,15 @@ rem ---------- Linked systems (optional, v4): kaikei-api :8000 + kanri-dwh :8100
 set CHAIN_BASE=%~dp0..\..\Kaikei-API-Kanri-DWH
 if not exist "%CHAIN_BASE%\kaikei-api" goto app_setup
 
+rem PostgreSQL (portable, :5433) - since v5 all three systems store in PostgreSQL.
+rem pg_ctl start fails silently when already running, so it is safe to always run it.
+set PG_BASE=%USERPROFILE%\pg16
+if exist "%PG_BASE%\pgsql\bin\pg_ctl.exe" (
+  echo - PostgreSQL :5433...
+  "%PG_BASE%\pgsql\bin\pg_ctl.exe" -D "%PG_BASE%\data" -o "-p 5433" -l "%PG_BASE%\pg.log" start >nul 2>nul
+  timeout /t 3 >nul
+)
+
 echo Starting linked systems (kaikei-api + kanri-dwh + ETL)...
 
 rem kaikei-api on :8000 - skip when already listening

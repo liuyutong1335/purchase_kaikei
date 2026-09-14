@@ -10,6 +10,7 @@
     "gen:bpmn": "node scripts/gen-bpmn.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "pg": "^8.23.0"
   }
 }

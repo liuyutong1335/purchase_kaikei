@@ -9,3 +9,6 @@ data/purchases.json
 *.pid
 data/purchase-kaikei.db
 data/purchase-kaikei.db-journal
+
+# DB credentials (NFR-001-05: never commit)
+.env
