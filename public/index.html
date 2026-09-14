@@ -18,11 +18,20 @@
         </div>
       </div>
 
+      <div class="actor-box operator-top" id="operator-box">
+        <div class="operator-head">
+          <span class="item-label">現在の操作者</span>
+          <span id="operator-label">読み込み中…</span>
+        </div>
+        <select id="operator-select" aria-label="操作者を切り替え"></select>
+      </div>
+
       <nav class="nav" id="nav">
         <button data-view="dashboard" class="active">ダッシュボード</button>
         <button data-view="new">新規申請</button>
         <button data-view="list">申請一覧</button>
         <button data-view="payables">支払予定</button>
+        <button data-view="journal">仕訳一覧</button>
         <button data-view="accounting">財務会計</button>
         <button data-view="management">管理会計</button>
       </nav>
@@ -78,8 +87,8 @@
           <h2>購買申請</h2>
           <form id="purchase-form">
             <div class="field">
-              <label for="requester">申請者 <span class="req">*</span></label>
-              <input id="requester" name="requester" type="text" required placeholder="例: 山田" />
+              <label for="requester">申請者（現在の操作者） <span class="req">*</span></label>
+              <input id="requester" name="requester" type="text" readonly tabindex="-1" required placeholder="右上で操作者を選択してください" />
             </div>
             <div class="field">
               <label for="item">品目 <span class="req">*</span></label>
@@ -144,10 +153,63 @@
           <div id="detail-actions" class="detail-actions"></div>
           <h3>履歴</h3>
           <ul id="detail-history" class="history"></ul>
+
+          <h3>変更履歴 <span class="hint">修正した内容は変更前 → 変更後で残ります</span></h3>
+          <ul id="detail-change-history" class="history" hidden></ul>
         </div>
       </section>
 
       <!-- 支払予定 -->
+      <!-- 仕訳一覧（v6 ステップ 4） -->
+      <section class="view" id="view-journal" hidden>
+        <div class="panel">
+          <h2>仕訳一覧 <span class="hint">購買の検収・支払で自動計上された仕訳</span></h2>
+          <div class="filter-bar">
+            <input id="jf-q" type="text" placeholder="仕訳番号・摘要・伝票・申請番号" />
+            <select id="jf-account"><option value="">科目: すべて</option></select>
+            <select id="jf-state">
+              <option value="">連携: すべて</option>
+              <option value="unlinked">未連携</option>
+              <option value="linked">連携済み</option>
+              <option value="error">エラー</option>
+            </select>
+            <input id="jf-from" type="date" title="計上日（自）" />
+            <input id="jf-to" type="date" title="計上日（至）" />
+            <button class="btn" id="jf-refresh">検索</button>
+          </div>
+          <div class="table-wrap">
+            <table id="journal-table">
+              <thead>
+                <tr>
+                  <th>仕訳番号</th><th>計上日</th><th>元伝票番号</th><th>申請番号</th><th>摘要</th>
+                  <th>借方科目</th><th>貸方科目</th><th>金額</th><th>状態</th><th>計上者</th><th>API連携</th><th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div class="empty" id="journal-empty" hidden>該当する仕訳はありません</div>
+          </div>
+        </div>
+
+        <div class="panel" id="journal-detail-panel" hidden>
+          <div class="panel-head">
+            <h2>仕訳詳細 <span id="jd-id"></span></h2>
+            <button class="btn ghost" id="jd-close">閉じる</button>
+          </div>
+          <div id="jd-info" class="detail-info"></div>
+          <div class="table-wrap">
+            <table id="jd-lines-table">
+              <thead><tr><th>科目</th><th>借方</th><th>貸方</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <h3>API 連携</h3>
+          <div id="jd-link" class="sync-status">—</div>
+          <h3>元申請・変更履歴</h3>
+          <div id="jd-purchase"></div>
+        </div>
+      </section>
+
       <section class="view" id="view-payables" hidden>
         <div class="panel" id="payables-panel">
           <h2>支払予定一覧 <span class="hint">支払予定日 = 検収月の翌月末日</span></h2>
@@ -376,6 +438,90 @@
       <div class="modal-actions">
         <button class="btn ghost" id="receive-cancel">キャンセル</button>
         <button class="btn primary" id="receive-submit">検収する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- v6 ステップ 3: 取下げ -->
+  <div class="modal-overlay" id="withdraw-modal" hidden>
+    <div class="modal">
+      <h3>取下げ</h3>
+      <p class="modal-target" id="withdraw-target"></p>
+      <p class="hint">申請を取り下げます。取り下げ後は「修正」→「再申請」できます。</p>
+      <div class="modal-actions">
+        <button class="btn ghost" id="withdraw-cancel">キャンセル</button>
+        <button class="btn danger" id="withdraw-submit">取下げる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- v6 ステップ 3: 修正 / 変更申請（変更履歴に残る） -->
+  <div class="modal-overlay" id="update-modal" hidden>
+    <div class="modal">
+      <h3>修正 / 変更申請</h3>
+      <p class="modal-target" id="update-target"></p>
+      <div class="field">
+        <label>品目 <span class="req">*</span></label>
+        <input id="update-item" type="text" required />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>数量 <span class="req">*</span></label>
+          <input id="update-qty" type="number" min="1" step="1" required />
+        </div>
+        <div class="field">
+          <label>単価 (円) <span class="req">*</span></label>
+          <input id="update-unitPrice" type="number" min="0" step="1" required />
+        </div>
+      </div>
+      <div class="field">
+        <label>部門</label>
+        <select id="update-department">
+          <option value="D10">D10 営業部</option>
+          <option value="D20">D20 開発部</option>
+          <option value="D90">D90 管理部（共通）</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>備考</label>
+        <input id="update-note" type="text" />
+      </div>
+      <div class="field">
+        <label>変更理由 <span class="req">*</span>（変更履歴に記録されます）</label>
+        <input id="update-reason" type="text" required placeholder="例: 数量の誤り修正" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="update-cancel">キャンセル</button>
+        <button class="btn primary" id="update-submit">保存する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- v6 ステップ 5: 訂正申請（検収後） -->
+  <div class="modal-overlay" id="correction-modal" hidden>
+    <div class="modal">
+      <h3>訂正申請</h3>
+      <p class="modal-target" id="correction-target"></p>
+      <p class="hint">承認されると、元の仕訳を取消仕訳で消して正しい金額で再計上します（元・取消・訂正のすべてが履歴に残ります）。</p>
+      <div class="field">
+        <label>品目 <span class="req">*</span></label>
+        <input id="correction-item" type="text" required />
+      </div>
+      <div class="field">
+        <label>訂正後単価 (円) <span class="req">*</span>（検収済み数量 × 単価で再計上します）</label>
+        <input id="correction-unitPrice" type="number" min="0" step="1" required />
+      </div>
+      <div class="field">
+        <label>備考</label>
+        <input id="correction-note" type="text" />
+      </div>
+      <div class="field">
+        <label>訂正理由 <span class="req">*</span></label>
+        <input id="correction-reason" type="text" required placeholder="例: 単価の誤り（100,000 → 80,000）" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="correction-cancel">キャンセル</button>
+        <button class="btn primary" id="correction-submit">訂正申請する</button>
       </div>
     </div>
   </div>

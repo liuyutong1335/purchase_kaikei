@@ -68,7 +68,7 @@ function post(base, url, body) {
 
 async function createPurchase(base, overrides = {}) {
   const res = await post(base, '/api/purchases', {
-    item: 'モニタ', qty: 2, unitPrice: 30000, requester: '山田', ...overrides,
+    item: 'モニタ', qty: 2, unitPrice: 30000, requester: 'u01', ...overrides,
   });
   assert.equal(res.status, 201);
   return res.json();
@@ -82,7 +82,7 @@ test('TS-INT-001: 申請登録（部門含む）→一覧照会、部門不正�
     assert.equal(p.department, 'D20');
     const def = await createPurchase(base); // 部門未指定
     assert.equal(def.department, 'D90');
-    const bad = await post(base, '/api/purchases', { item: 'x', qty: 1, unitPrice: 100, requester: '山田', department: 'D99' });
+    const bad = await post(base, '/api/purchases', { item: 'x', qty: 1, unitPrice: 100, requester: 'u01', department: 'D99' });
     assert.equal(bad.status, 400);
   } finally { server.close(); }
 });

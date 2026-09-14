@@ -78,7 +78,6 @@ body {
 .nav button.active { background: rgba(255, 255, 255, 0.14); color: #fff; font-weight: 600; }
 
 .sidebar .actor-box {
-  margin-top: auto;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -86,6 +85,25 @@ body {
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.07);
   border-radius: 6px;
+}
+/* 操作者切替はサイドバー最上部（アカウント切替らしく） */
+.sidebar .actor-box.operator-top {
+  margin-bottom: 4px;
+}
+.sidebar .actor-box.operator-top .operator-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.sidebar .actor-box.operator-top #operator-label {
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+}
+/* 会計エンジン状態はサイドバー最下部に押し込む */
+.sidebar .actor-box#kaikei-status {
+  margin-top: auto;
 }
 .sidebar .actor-box select {
   width: 100%;
@@ -530,3 +548,51 @@ th.amount { text-align: right; }
   font-size: 9.5px;
   vertical-align: 1px;
 }
+
+/* v6 ステップ 1/2: 操作者切替 + 自己承認禁止の注記 */
+.sidebar .actor-box select {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.self-approval-note {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--gold);
+  border-radius: 6px;
+  color: var(--gold);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* v6 ステップ 4: 仕訳一覧 */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.filter-bar input, .filter-bar select {
+  padding: 6px 8px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--gold);
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+  font-size: inherit;
+}
+.badge.link-linked { background: #e7f5ec; color: #1d7a46; }
+.badge.link-unlinked { background: #fff6e0; color: #8a6100; }
+.badge.link-error { background: #fde8e6; color: #b3261e; }
+.jd-purchase-row { margin-bottom: 8px; }
+
+/* フィルタバーの入力欄は横並び・内容幅に合わせる（グローバルの width:100% を上書き） */
+.filter-bar input, .filter-bar select { width: auto; flex: 0 1 auto; min-width: 0; }
+.filter-bar input#jf-q { flex: 1 1 220px; }

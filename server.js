@@ -3,7 +3,7 @@
 // v5: store が非同期（PostgreSQL）になったため全ハンドラを async 化。API 契約は v4 までと不変。
 const path = require('path');
 const express = require('express');
-const { PurchaseStore, TransitionError, ValidationError } = require('./store/purchase-store');
+const { PurchaseStore, TransitionError, ValidationError, SelfApprovalError } = require('./store/purchase-store');
 const { KanriClient } = require('./store/kanri-client');
 
 function createApp(store, kanri) {
@@ -19,6 +19,7 @@ function createApp(store, kanri) {
   const handleError = (err, res) => {
     if (res.headersSent) return;
     if (err instanceof TransitionError) return res.status(409).json({ error: err.code, message: err.message });
+    if (err instanceof SelfApprovalError) return res.status(403).json({ error: err.code, message: err.message });
     if (err instanceof ValidationError) return res.status(400).json({ error: err.code, message: err.message });
     if (err.code === 'not_found') return res.status(404).json({ error: err.message });
     if (err.code === 'kaikei_unavailable' || err.code === 'kanri_unavailable' || err.code === 'kanri_source_error') {
@@ -44,6 +45,11 @@ function createApp(store, kanri) {
     res.json(store.list(req.query.status));
   });
 
+  // v6 ステップ 1: ユーザーマスタ（操作者切替用）
+  app.get('/api/users', (req, res) => {
+    res.json(store.listUsers());
+  });
+
   // CT-API-PURCHASEKAIKEI-001: 詳細（履歴・仕訳参照含む）
   app.get('/api/purchases/:id', (req, res) => {
     try {
@@ -53,13 +59,17 @@ function createApp(store, kanri) {
     }
   });
 
-  // CT-API-PURCHASEKAIKEI-002/003/004/005: approve / reject / resubmit / order / receive
+  // CT-API-PURCHASEKAIKEI-002/003/004/005 + v6-003: approve / reject / resubmit / order / receive / withdraw / update
   const actions = {
     approve: (id, body) => store.approve(id, body.actor, body.comment),
     reject: (id, body) => store.reject(id, body.actor, body.comment),
     resubmit: (id, body) => store.resubmit(id, body.actor, body.comment),
     order: (id, body) => store.order(id, body.actor),
     receive: (id, body) => store.receive(id, body.actor, body.receivedQty, body.receivedAt, body.comment),
+    withdraw: (id, body) => store.withdraw(id, body.actor),
+    update: (id, body) => store.update(id, body.actor, body.updates, body.reason),
+    'request-correction': (id, body) => store.requestCorrection(id, body.actor, body.updates, body.reason),
+    'approve-correction': (id, body) => store.approveCorrection(id, body.actor),
   };
 
   for (const [action, run] of Object.entries(actions)) {
@@ -101,6 +111,26 @@ function createApp(store, kanri) {
   app.get('/api/accounting/ledger/:code', (req, res) => {
     try {
       res.json(store.journal.ledger(req.params.code, { from: req.query.from, to: req.query.to }));
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
+  // v6 ステップ 4: 仕訳一覧（複合検索）/ 仕訳詳細（元申請・変更履歴への逆リンク付き）
+  app.get('/api/accounting/entries', (req, res) => {
+    res.json(store.listEntries({
+      from: req.query.from,
+      to: req.query.to,
+      account: req.query.account,
+      department: req.query.department,
+      q: req.query.q,
+      state: req.query.state,
+    }));
+  });
+
+  app.get('/api/accounting/entries/:id', (req, res) => {
+    try {
+      res.json(store.getEntry(Number(req.params.id)));
     } catch (err) {
       handleError(err, res);
     }

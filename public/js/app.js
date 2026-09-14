@@ -7,24 +7,97 @@ const STATUS_LABELS = {
   rejected: '却下',
   ordered: '発注済み',
   received: '全量検収済',
+  paid: '支払済み',
+  withdrawn: '取下げ',
+  correction_pending: '訂正承認待ち',
 };
 
 const PAYABLE_STATUS_LABELS = { scheduled: '支払予定', paid: '支払済み' };
 const DEPARTMENT_LABELS = { D10: 'D10 営業部', D20: 'D20 開発部', D90: 'D90 管理部' };
+const ROLE_LABELS = { requester: '申請者', approver: '承認者', accounting: '経理', admin: '管理者' };
+
+// v6 ステップ 1: 操作者・ロール切替（選択はこのブラウザだけに記憶する）
+const OPERATOR_KEY = 'pk-operator-code';
+
+const state = {
+  filter: '',
+  selectedId: null,
+  view: 'dashboard',
+  rejectTargetId: null,
+  receiveTarget: null,
+  withdrawTargetId: null,
+  updateTarget: null,
+  correctionTarget: null,
+  operator: null, // { code, name, role }
+  users: [],
+  cache: { purchases: [], payables: [] },
+};
 
 const FLOW_STEPS = [
   { key: 'submitted', label: '申請' },
   { key: 'approved', label: '承認' },
   { key: 'ordered', label: '発注' },
   { key: 'received', label: '検収' },
+  { key: 'paid', label: '支払' },
 ];
-
-const state = { filter: '', selectedId: null, view: 'dashboard', rejectTargetId: null, receiveTarget: null, cache: { purchases: [], payables: [] } };
 
 const $ = (sel) => document.querySelector(sel);
 
+/* ---------- 操作者・ロール切替（v6 ステップ 1） ---------- */
+
+// 名前は画面に出さない（個人情報表示の抑止）。ユーザーはコード + ロールで見せる
+function userName(code) {
+  return code || '—';
+}
+
+function currentActor() {
+  return state.operator ? state.operator.code : null;
+}
+
+async function initOperator() {
+  try {
+    state.users = await api('/api/users');
+  } catch (err) {
+    $('#operator-label').textContent = `ユーザーの取得に失敗: ${err.message}`;
+    return;
+  }
+  const sel = $('#operator-select');
+  sel.innerHTML = '';
+  for (const u of state.users) {
+    const opt = document.createElement('option');
+    opt.value = u.code;
+    opt.textContent = `${u.code} / ${ROLE_LABELS[u.role] || u.role}`;
+    sel.appendChild(opt);
+  }
+  let saved = null;
+  try {
+    saved = localStorage.getItem(OPERATOR_KEY);
+  } catch { /* プライベートウィンドウ等では記憶しないだけ */ }
+  const initial = state.users.find((u) => u.code === saved) || state.users[0];
+  if (initial) setOperator(initial.code);
+  sel.addEventListener('change', () => setOperator(sel.value));
+}
+
+function setOperator(code) {
+  const u = state.users.find((x) => x.code === code);
+  if (!u) return;
+  state.operator = u;
+  $('#operator-select').value = u.code;
+  $('#operator-label').textContent = `${u.code} / ${ROLE_LABELS[u.role] || u.role}`;
+  syncRequesterField();
+  try {
+    localStorage.setItem(OPERATOR_KEY, u.code);
+  } catch { /* 記憶できなくても動作には影響しない */ }
+}
+
+function syncRequesterField() {
+  const field = $('#requester');
+  if (field) field.value = state.operator ? state.operator.code : '';
+}
+
 function yen(n) {
-  return n.toLocaleString('ja-JP', { style: 'currency', currency: 'JPY' });
+  // currency style は環境で全角￥などに揺れるため、半角円記号 + 桁区切りで固定する
+  return `¥${Number(n || 0).toLocaleString('ja-JP')}`;
 }
 
 async function api(path, opts) {
@@ -54,8 +127,10 @@ function showView(name) {
   document.querySelectorAll('.nav button').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('.view').forEach((v) => { v.hidden = v.id !== `view-${name}`; });
   if (name === 'dashboard') renderDashboard();
+  if (name === 'journal') initJournalView();
   if (name === 'accounting') initAccountingView();
   if (name === 'management') initManagementView();
+  if (name === 'new') syncRequesterField();
 }
 
 /* ---------- KPI / ダッシュボード ---------- */
@@ -116,7 +191,7 @@ function renderList() {
       <td title="${p.item}"><span class="cell-ellipsis">${p.item}</span></td>
       <td>${p.qty}</td>
       <td class="amount">${yen(p.amount)}</td>
-      <td title="${p.requester}"><span class="cell-ellipsis">${p.requester}</span></td>
+      <td title="${userName(p.requester)}"><span class="cell-ellipsis">${userName(p.requester)}</span></td>
       <td>${DEPARTMENT_LABELS[p.department] || p.department}</td>
       <td><span class="badge ${p.status}">${STATUS_LABELS[p.status]}</span></td>
       <td>${p.receivedTotal}/${p.qty}</td>
@@ -177,6 +252,132 @@ function renderPayables() {
   total.innerHTML = `未払い合計<strong>${yen(scheduledSum)}</strong>`;
 }
 
+/* ---------- 仕訳一覧（v6 ステップ 4） ---------- */
+
+const LINK_STATE_LABELS = { linked: '連携済み', unlinked: '未連携', error: 'エラー' };
+const ENTRY_TYPE_LABELS = { normal: '通常', receive: '検収', pay: '支払', reversal: '取消' };
+const JOURNAL_FILTER_IDS = ['#jf-q', '#jf-account', '#jf-state', '#jf-from', '#jf-to'];
+
+async function initJournalView() {
+  // 科目セレクト（すでに取得済みなら再取得しない）
+  const sel = $('#jf-account');
+  if (sel.options.length <= 1) {
+    try {
+      const { accounts } = await api('/api/accounting/accounts');
+      for (const a of accounts) {
+        const opt = document.createElement('option');
+        opt.value = a.code;
+        opt.textContent = `${a.code} ${a.name}`;
+        sel.appendChild(opt);
+      }
+    } catch (err) { /* 科目が空でも一覧は出せる */ }
+  }
+  await renderJournal();
+}
+
+async function renderJournal() {
+  const qs = new URLSearchParams();
+  if ($('#jf-q').value.trim()) qs.set('q', $('#jf-q').value.trim());
+  if ($('#jf-account').value) qs.set('account', $('#jf-account').value);
+  if ($('#jf-state').value) qs.set('state', $('#jf-state').value);
+  if ($('#jf-from').value) qs.set('from', $('#jf-from').value);
+  if ($('#jf-to').value) qs.set('to', $('#jf-to').value);
+
+  let rows;
+  try {
+    rows = await api(`/api/accounting/entries${qs.toString() ? `?${qs}` : ''}`);
+  } catch (err) {
+    toast(`仕訳一覧の取得に失敗: ${err.message}`, false);
+    return;
+  }
+  const tbody = $('#journal-table tbody');
+  tbody.innerHTML = '';
+  $('#journal-empty').hidden = rows.length > 0;
+  for (const e of [...rows].reverse()) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>#${e.id}</td>
+      <td>${e.date}</td>
+      <td>${e.voucherNo || '—'}</td>
+      <td>${e.purchaseId ? `<button class="link-btn" data-purchase="${e.purchaseId}">${e.purchaseId}</button>` : '—'}</td>
+      <td title="${e.description}"><span class="cell-ellipsis">${e.description}${e.multiLine ? ' <span class="tag-latest">他</span>' : ''}</span></td>
+      <td>${e.debitAccount || '—'}</td>
+      <td>${e.creditAccount || '—'}</td>
+      <td class="amount">${yen(e.amount)}</td>
+      <td>${e.status === 'active' ? '有効' : '取消済'}</td>
+      <td>${e.postedBy || '—'}</td>
+      <td><span class="badge link-${e.linkState}">${LINK_STATE_LABELS[e.linkState] || e.linkState}</span></td>
+      <td><button class="detail-btn" data-id="${e.id}">詳細</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+async function showJournalDetail(id) {
+  const e = await api(`/api/accounting/entries/${id}`);
+  $('#journal-detail-panel').hidden = false;
+  $('#jd-id').textContent = `#${e.id}（${ENTRY_TYPE_LABELS[e.entryType] || e.entryType}）`;
+  $('#jd-info').innerHTML = `
+    <div><div class="item-label">計上日</div>${e.date}</div>
+    <div><div class="item-label">元伝票番号</div>${e.voucherNo || '—'}</div>
+    <div><div class="item-label">申請番号</div>${e.purchaseId || '—'}</div>
+    <div><div class="item-label">摘要</div>${e.description}</div>
+    <div><div class="item-label">計上者</div>${e.postedBy || '—'}</div>
+    <div><div class="item-label">計上日時</div>${(e.createdAt || '').replace('T', ' ').slice(0, 19)}</div>
+    <div><div class="item-label">状態</div>${e.status === 'active' ? '有効' : '取消済'}</div>
+    ${e.reversesEntryId ? `<div><div class="item-label">取消対象仕訳</div><button class="link-btn" data-journal="${e.reversesEntryId}">#${e.reversesEntryId}</button></div>` : ''}
+    ${e.reversedBy ? `<div><div class="item-label">取消仕訳</div><button class="link-btn" data-journal="${e.reversedBy}">#${e.reversedBy}</button></div>` : ''}
+  `;
+  const linesTbody = $('#jd-lines-table tbody');
+  linesTbody.innerHTML = '';
+  for (const l of e.lines) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${l.account_code}</td>
+      <td class="amount">${l.side === 'debit' ? yen(l.amount) : ''}</td>
+      <td class="amount">${l.side === 'credit' ? yen(l.amount) : ''}</td>
+    `;
+    linesTbody.appendChild(tr);
+  }
+  const link = $('#jd-link');
+  link.textContent = e.linkState === 'linked'
+    ? `● 連携済み — kaikei-api 側の仕訳 #${e.kaikeiEntryId}`
+    : e.linkState === 'error'
+      ? '● エラー — 再送待ち（連携メニューから再送できます）'
+      : '● 未連携 — kaikei-api が起動すると自動で送信されます';
+  link.className = `sync-status ${e.linkState === 'linked' ? 'ok' : 'warn'}`;
+
+  const pbox = $('#jd-purchase');
+  if (e.purchase) {
+    pbox.innerHTML = `
+      <div class="jd-purchase-row">
+        <button class="link-btn" data-purchase="${e.purchase.id}">${e.purchase.id}: ${e.purchase.item}（${yen(e.purchase.amount)}・${STATUS_LABELS[e.purchase.status]}）へ移動</button>
+      </div>
+      ${e.purchase.changeHistory && e.purchase.changeHistory.length > 0 ? `
+        <ul class="history">
+          ${e.purchase.changeHistory.map((c) => `
+            <li>
+              <div>${c.reason}</div>
+              ${c.changes.map((ch) => `<div class="his-meta">${ch.field}: ${ch.before} → ${ch.after}</div>`).join('')}
+              <div class="his-meta">${c.at.replace('T', ' ').slice(0, 16)} / 修正者: ${c.actor}</div>
+            </li>
+          `).join('')}
+        </ul>
+      ` : '<div class="his-meta">変更履歴はありません</div>'}
+    `;
+  } else {
+    pbox.innerHTML = '<div class="his-meta">元申請なし（手動仕訳・ステップ 5 の取消/訂正仕訳など）</div>';
+  }
+}
+
+// 購買詳細 → 仕訳（順リンク）: showDetail の 仕訳 参照をクリック可能にする
+function journalLinkHtml(p) {
+  if (!p.journal || p.journal.length === 0) return '—';
+  return p.journal.map((j) =>
+    `<button class="link-btn" data-journal="${j.entryId}">#${j.entryId}（${j.kind === 'receive' ? '検収' : '支払'}）</button>`
+  ).join(' ');
+}
+
 /* ---------- データ読み込み ---------- */
 
 async function refreshAll() {
@@ -193,7 +394,7 @@ async function refreshAll() {
 /* ---------- 詳細 ---------- */
 
 function stepperOf(p) {
-  const doneSet = { submitted: 1, approved: 2, ordered: 3, received: 4 };
+  const doneSet = { submitted: 1, approved: 2, ordered: 3, received: 4, paid: 5, correction_pending: 4 };
   const reached = doneSet[p.status] || 0;
   return FLOW_STEPS.map((s, i) => {
     const n = i + 1;
@@ -221,12 +422,12 @@ async function showDetail(id) {
     <div><div class="item-label">数量</div>${p.qty}</div>
     <div><div class="item-label">単価</div>${yen(p.unitPrice)}</div>
     <div><div class="item-label">金額</div>${yen(p.amount)}</div>
-    <div><div class="item-label">申請者</div>${p.requester}</div>
+    <div><div class="item-label">申請者</div>${userName(p.requester)}</div>
     <div><div class="item-label">部門</div>${DEPARTMENT_LABELS[p.department] || p.department}</div>
     <div><div class="item-label">状態</div><span class="badge ${p.status}">${STATUS_LABELS[p.status]}</span></div>
     <div><div class="item-label">検収進捗</div>${p.receivedTotal}/${p.qty}</div>
     <div><div class="item-label">発注番号</div>${p.orderNo || '—'}</div>
-    <div><div class="item-label">仕訳</div>${(p.journal || []).map((j) => `#${j.entryId}（${j.kind === 'receive' ? '検収' : '支払'}）`).join(' ') || '—'}</div>
+    <div><div class="item-label">仕訳</div>${journalLinkHtml(p)}</div>
   `;
 
   const actions = $('#detail-actions');
@@ -235,8 +436,17 @@ async function showDetail(id) {
     const btn = document.createElement('button');
     btn.textContent = b.label;
     btn.className = `btn ${b.cls}`;
+    btn.disabled = !!b.disabled;
+    btn.title = b.title || '';
     btn.addEventListener('click', () => b.onClick(p));
     actions.appendChild(btn);
+    // 本人の申請のときは理由を目立たせる（v6 ステップ 2）
+    if (b.disabled && b.title) {
+      const note = document.createElement('div');
+      note.className = 'self-approval-note';
+      note.textContent = b.title;
+      actions.appendChild(note);
+    }
   }
 
   const history = $('#detail-history');
@@ -251,6 +461,24 @@ async function showDetail(id) {
     `;
     history.appendChild(li);
   }
+
+  // v6 ステップ 3: 変更履歴（変更前 → 変更後 / 修正者 / 日時 / 理由）
+  const changeBox = $('#detail-change-history');
+  changeBox.innerHTML = '';
+  changeBox.hidden = !(p.changeHistory && p.changeHistory.length > 0);
+  for (const c of [...(p.changeHistory || [])].reverse()) {
+    const li = document.createElement('li');
+    const fields = c.changes.map((ch) => {
+      const val = (v) => (ch.field === 'unitPrice' || ch.field === 'qty' ? String(v) : v == null ? '—' : v);
+      return `<div class="his-meta">${ch.field}: ${val(ch.before)} → ${val(ch.after)}</div>`;
+    }).join('');
+    li.innerHTML = `
+      <div>${c.reason}</div>
+      ${fields}
+      <div class="his-meta">${c.at.replace('T', ' ').slice(0, 16)} / 修正者: ${c.actor}</div>
+    `;
+    changeBox.appendChild(li);
+  }
 }
 
 function actionButtons(p) {
@@ -258,28 +486,37 @@ function actionButtons(p) {
     await refreshAll();
     if (state.selectedId) await showDetail(state.selectedId);
   };
+  const actorBody = () => JSON.stringify({ actor: currentActor() });
   const buttons = [];
   if (p.status === 'submitted') {
+    // v6 ステップ 2: 自己承認禁止 — 本人の申請は承認ボタンを無効化し理由を表示する
+    const isSelf = p.requester === currentActor();
     buttons.push({
       label: '承認',
       cls: 'primary',
+      disabled: isSelf,
+      title: isSelf ? 'この申請は本人が作成したため承認できません。' : '',
       onClick: async (p) => {
         try {
-          await api(`/api/purchases/${p.id}/approve`, { method: 'POST', body: JSON.stringify({}) });
+          await api(`/api/purchases/${p.id}/approve`, { method: 'POST', body: actorBody() });
           toast('承認しました', true);
           await refresh();
         } catch (err) { toast(`エラー: ${err.message}`, false); }
       },
     });
     buttons.push({ label: '却下', cls: 'danger', onClick: (p) => openRejectModal(p) });
+    // v6 ステップ 3: 取下げ（申請者本人のみ・サーバーでも検証）
+    buttons.push({ label: '取下げ', cls: 'danger', disabled: !isSelf, title: isSelf ? '' : '取下げは申請者本人のみできます', onClick: (p) => openWithdrawModal(p) });
   }
-  if (p.status === 'rejected') {
+  if (p.status === 'rejected' || p.status === 'withdrawn') {
+    // v6 ステップ 3: 修正（ withdrawn / rejected のみ・変更履歴に残る）→ その後再申請
+    buttons.push({ label: '修正', cls: '', onClick: (p) => openUpdateModal(p, { changeRequest: false }) });
     buttons.push({
       label: '再申請',
       cls: 'primary',
       onClick: async (p) => {
         try {
-          await api(`/api/purchases/${p.id}/resubmit`, { method: 'POST', body: JSON.stringify({}) });
+          await api(`/api/purchases/${p.id}/resubmit`, { method: 'POST', body: actorBody() });
           toast('再申請しました', true);
           await refresh();
         } catch (err) { toast(`エラー: ${err.message}`, false); }
@@ -287,20 +524,47 @@ function actionButtons(p) {
     });
   }
   if (p.status === 'approved') {
+    // v6 ステップ 3: 変更申請 — 修正のうえ submitted に戻り、再承認を経る
+    buttons.push({ label: '変更申請', cls: '', onClick: (p) => openUpdateModal(p, { changeRequest: true }) });
     buttons.push({
       label: '発注',
       cls: 'primary',
       onClick: async (p) => {
         try {
-          const ordered = await api(`/api/purchases/${p.id}/order`, { method: 'POST', body: JSON.stringify({}) });
+          const ordered = await api(`/api/purchases/${p.id}/order`, { method: 'POST', body: actorBody() });
           toast(`発注しました（${ordered.orderNo}）`, true);
           await refresh();
         } catch (err) { toast(`エラー: ${err.message}`, false); }
       },
     });
   }
+  if (p.status === 'ordered') {
+    // v6 ステップ 3: 発注済みは直接上書きせず変更履歴のみ残す
+    buttons.push({ label: '修正（変更履歴に残す）', cls: '', onClick: (p) => openUpdateModal(p, { changeRequest: false }) });
+  }
   if (p.status === 'ordered' && p.receivedTotal < p.qty) {
     buttons.push({ label: '検収', cls: 'primary', onClick: (p) => openReceiveModal(p) });
+  }
+  if (p.status === 'received' || p.status === 'paid') {
+    // v6 ステップ 5: 検収後の訂正は 訂正申請 → 承認 → 取消仕訳 → 再計上
+    buttons.push({ label: '訂正申請', cls: '', onClick: (p) => openCorrectionModal(p) });
+  }
+  if (p.status === 'correction_pending') {
+    // 訂正申請の承認（申請者本人は承認不可 — 通常の承認と同じ理屈）
+    const isSelf = p.requester === currentActor();
+    buttons.push({
+      label: '訂正を承認して再計上',
+      cls: 'primary',
+      disabled: isSelf,
+      title: isSelf ? 'この申請は本人が作成したため承認できません。' : '',
+      onClick: async (p) => {
+        try {
+          const r = await api(`/api/purchases/${p.id}/approve-correction`, { method: 'POST', body: actorBody() });
+          toast(`訂正しました（取消・再計上とも履歴に記録・状態: ${STATUS_LABELS[r.status] || r.status}）`, true);
+          await refresh();
+        } catch (err) { toast(`エラー: ${err.message}`, false); }
+      },
+    });
   }
   return buttons;
 }
@@ -329,8 +593,107 @@ function openReceiveModal(p) {
   qty.focus();
 }
 
+// v6 ステップ 3: 取下げ・修正（変更申請）モーダル
+function openWithdrawModal(p) {
+  state.withdrawTargetId = p.id;
+  $('#withdraw-target').textContent = `${p.id} ${p.item}（${yen(p.amount)}）`;
+  $('#withdraw-modal').hidden = false;
+}
+
+function openUpdateModal(p, { changeRequest }) {
+  state.updateTarget = { id: p.id, changeRequest };
+  $('#update-target').textContent = changeRequest
+    ? `${p.id} ${p.item}（変更申請 — 保存後、再承認を経ます）`
+    : `${p.id} ${p.item}（修正 — 変更履歴に残ります）`;
+  $('#update-item').value = p.item;
+  $('#update-qty').value = p.qty;
+  $('#update-unitPrice').value = p.unitPrice;
+  $('#update-department').value = p.department;
+  $('#update-note').value = p.note || '';
+  $('#update-reason').value = '';
+  $('#update-modal').hidden = false;
+  $('#update-item').focus();
+}
+
+// v6 ステップ 5: 検収後の訂正申請（承認後に取消仕訳 → 訂正仕訳を計上）
+function openCorrectionModal(p) {
+  state.correctionTarget = p.id;
+  $('#correction-target').textContent = `${p.id} ${p.item}（検収済 ${p.receivedTotal}/${p.qty}・${yen(p.receivedTotal * p.unitPrice)}）`;
+  $('#correction-item').value = p.item;
+  $('#correction-unitPrice').value = p.unitPrice;
+  $('#correction-note').value = p.note || '';
+  $('#correction-reason').value = '';
+  $('#correction-modal').hidden = false;
+  $('#correction-item').focus();
+}
+
 $('#reject-cancel').addEventListener('click', () => { $('#reject-modal').hidden = true; });
 $('#receive-cancel').addEventListener('click', () => { $('#receive-modal').hidden = true; });
+$('#withdraw-cancel').addEventListener('click', () => { $('#withdraw-modal').hidden = true; });
+$('#update-cancel').addEventListener('click', () => { $('#update-modal').hidden = true; });
+$('#correction-cancel').addEventListener('click', () => { $('#correction-modal').hidden = true; });
+
+$('#correction-submit').addEventListener('click', async () => {
+  const reason = $('#correction-reason').value.trim();
+  if (!reason) { toast('訂正理由を入力してください', false); return; }
+  try {
+    await api(`/api/purchases/${state.correctionTarget}/request-correction`, {
+      method: 'POST',
+      body: JSON.stringify({
+        actor: currentActor(),
+        reason,
+        updates: {
+          item: $('#correction-item').value.trim(),
+          unitPrice: Number($('#correction-unitPrice').value),
+          note: $('#correction-note').value,
+        },
+      }),
+    });
+    $('#correction-modal').hidden = true;
+    toast('訂正申請を受け付けました（承認後に取消仕訳・訂正仕訳を計上します）', true);
+    await refreshAll();
+    if (state.selectedId) await showDetail(state.selectedId);
+  } catch (err) { toast(`エラー: ${err.message}`, false); }
+});
+
+$('#withdraw-submit').addEventListener('click', async () => {
+  try {
+    await api(`/api/purchases/${state.withdrawTargetId}/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ actor: currentActor() }),
+    });
+    $('#withdraw-modal').hidden = true;
+    toast('取下げました（修正して再申請できます）', true);
+    await refreshAll();
+    if (state.selectedId) await showDetail(state.selectedId);
+  } catch (err) { toast(`エラー: ${err.message}`, false); }
+});
+
+$('#update-submit').addEventListener('click', async () => {
+  const { id, changeRequest } = state.updateTarget || {};
+  const reason = $('#update-reason').value.trim();
+  if (!reason) { toast('変更理由を入力してください', false); return; }
+  try {
+    await api(`/api/purchases/${id}/update`, {
+      method: 'POST',
+      body: JSON.stringify({
+        actor: currentActor(),
+        reason,
+        updates: {
+          item: $('#update-item').value.trim(),
+          qty: Number($('#update-qty').value),
+          unitPrice: Number($('#update-unitPrice').value),
+          department: $('#update-department').value,
+          note: $('#update-note').value,
+        },
+      }),
+    });
+    $('#update-modal').hidden = true;
+    toast(changeRequest ? '変更申請を受け付けました（再承認を経ます）' : '修正しました（変更履歴に記録）', true);
+    await refreshAll();
+    if (state.selectedId) await showDetail(state.selectedId);
+  } catch (err) { toast(`エラー: ${err.message}`, false); }
+});
 
 $('#reject-submit').addEventListener('click', async () => {
   const comment = $('#reject-comment').value.trim();
@@ -338,7 +701,7 @@ $('#reject-submit').addEventListener('click', async () => {
   try {
     await api(`/api/purchases/${state.rejectTargetId}/reject`, {
       method: 'POST',
-      body: JSON.stringify({ comment }),
+      body: JSON.stringify({ actor: currentActor(), comment }),
     });
     $('#reject-modal').hidden = true;
     toast('却下しました', true);
@@ -357,7 +720,7 @@ $('#receive-submit').addEventListener('click', async () => {
   try {
     const { payable } = await api(`/api/purchases/${p.id}/receive`, {
       method: 'POST',
-      body: JSON.stringify({ receivedQty: qty, receivedAt: date, comment: $('#receive-note').value }),
+      body: JSON.stringify({ receivedQty: qty, receivedAt: date, comment: $('#receive-note').value, actor: currentActor() }),
     });
     $('#receive-modal').hidden = true;
     toast(`検収しました（支払予定 ${payable.id} 計上・仕訳 entry #${payable.entryId || '—'}・予定日 ${payable.scheduledDate}）`, true);
@@ -365,7 +728,7 @@ $('#receive-submit').addEventListener('click', async () => {
   } catch (err) { toast(`エラー: ${err.message}`, false); }
 });
 
-for (const id of ['reject-modal', 'receive-modal']) {
+for (const id of ['reject-modal', 'receive-modal', 'withdraw-modal', 'update-modal', 'correction-modal']) {
   document.getElementById(id).addEventListener('click', (e) => {
     if (e.target === e.currentTarget) e.currentTarget.hidden = true;
   });
@@ -389,7 +752,7 @@ $('#purchase-form').addEventListener('submit', async (e) => {
     const created = await api('/api/purchases', {
       method: 'POST',
       body: JSON.stringify({
-        requester: form.requester.value,
+        requester: currentActor(), // v6 ステップ 1: 申請者は常に現在の操作者
         item: form.item.value,
         qty: Number(form.qty.value),
         unitPrice: Number(form.unitPrice.value),
@@ -732,7 +1095,7 @@ $('#payable-table').addEventListener('click', async (e) => {
   try {
     const paid = await api(`/api/payables/${btn.dataset.id}/pay`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({ actor: currentActor() }),
     });
     toast(`支払を記録しました（仕訳 entry #${paid.entryId || '—'}）`, true);
     await refreshAll();
@@ -746,5 +1109,34 @@ $('#detail-close').addEventListener('click', () => {
   state.selectedId = null;
 });
 
+/* ---------- 仕訳一覧のイベント（v6 ステップ 4） ---------- */
+
+$('#jf-refresh').addEventListener('click', renderJournal);
+for (const id of JOURNAL_FILTER_IDS) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') renderJournal(); });
+}
+
+$('#journal-table').addEventListener('click', async (e) => {
+  const detail = e.target.closest('.detail-btn');
+  if (detail) { await showJournalDetail(detail.dataset.id); return; }
+  // 申請番号 → 購買詳細への順リンク
+  const purchaseBtn = e.target.closest('.link-btn[data-purchase]');
+  if (purchaseBtn) {
+    showView('list');
+    await showDetail(purchaseBtn.dataset.purchase);
+  }
+});
+
+$('#jd-close').addEventListener('click', () => { $('#journal-detail-panel').hidden = true; });
+
+// 元申請 → 仕訳一覧（詳細付き）への逆リンク
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.link-btn[data-journal]');
+  if (!btn) return;
+  showView('journal');
+  await showJournalDetail(btn.dataset.journal);
+});
+
 refreshAll();
+initOperator();
 initAccountingView();

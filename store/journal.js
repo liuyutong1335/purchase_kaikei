@@ -35,8 +35,10 @@ class JournalEngine {
     this.entries = entries;
   }
 
-  // 仕訳 1 件を計上する。借方合計 = 貸方合計を検証し、連番 id を採番して返す
-  post({ date, description, department, lines }) {
+  // 仕訳 1 件を計上する。借方合計 = 貸方合計を検証し、連番 id を採番して返す。
+  // v6 ステップ 4: purchaseId（申請番号）・voucherNo（元伝票番号）・postedBy（計上者）・
+  // entryType（normal / receive / pay / reversal）を新华して記録する
+  post({ date, description, department, lines, purchaseId = null, voucherNo = null, postedBy = null, entryType = 'normal', reversesEntryId = null }) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
       throw new JournalError(`invalid date: ${date}`);
     }
@@ -61,7 +63,7 @@ class JournalEngine {
       throw new JournalError(`unbalanced: debit ${debit} != credit ${credit}`);
     }
     const id = (this.counters.entry += 1);
-    const entry = { id, date, description, department, lines, createdAt: new Date().toISOString() };
+    const entry = { id, date, description, department, purchaseId, voucherNo, postedBy, entryType, status: 'active', reversesEntryId, lines, createdAt: new Date().toISOString() };
     this.entries.push(entry);
     return entry;
   }
