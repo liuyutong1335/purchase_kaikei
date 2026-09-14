@@ -1,0 +1,16 @@
+# npm audit report
+
+qs  2.2.5 - 6.15.3
+Severity: moderate
+qs array-limit bypass via bracket-key comma parsing - https://github.com/advisories/GHSA-x5fp-wj9c-mxmx
+qs: Denial of Service via Attacker Controlled isBuffer - https://github.com/advisories/GHSA-4mjr-xmp4-gh2g
+fix available via `npm audit fix`
+node_modules/qs
+  express  4.22.2
+  Depends on vulnerable versions of qs
+  node_modules/express
+
+2 moderate severity vulnerabilities
+
+To address all issues, run:
+  npm audit fix

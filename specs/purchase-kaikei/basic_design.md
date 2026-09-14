@@ -15,11 +15,12 @@ created_at: 2026-09-10
 basic_design:
   feature_id: FEAT-PURCHASEKAIKEI
   profile: enterprise-erp
-  version: 3
+  version: 4
   need:
     - RQ-PURCHASEKAIKEI-001
     - RQ-PURCHASEKAIKEI-002
     - RQ-PURCHASEKAIKEI-003
+    - RQ-PURCHASEKAIKEI-004
   solution:
     - US-PURCHASEKAIKEI-001
     - US-PURCHASEKAIKEI-002
@@ -28,13 +29,14 @@ basic_design:
     - US-PURCHASEKAIKEI-005
     - US-PURCHASEKAIKEI-006
     - US-PURCHASEKAIKEI-007
+    - US-PURCHASEKAIKEI-008
   stakeholders:
     owner: 研修受講者 (Liu Yutong)
     dev: AI agent (Claude Code)
     approver: 研修受講者本人
-  value: 購買フロー全段階の仕訳自動計上と、購買×会計×管理会計（3 システム）の 1 画面突合
-  context: 研修用・ローカル実行・単体完結（会計機能は内蔵エンジン）。v4 で SQLite 永続化 + kanri-dwh 連携（経営ダッシュボード）を追加
-  change: 検収・支払の状態遷移を仕訳として帳簿に自動反映し、管理会計 DWH の KPI まで 1 本のチェーンで反映
+  value: 購買フロー全段階の仕訳自動計上と、購買×会計×管理会計（3 システム）の 1 画面突合。v5 でデータ基盤を PostgreSQL に統一
+  context: 研修用・ローカル実行。v5 で 1 台の PostgreSQL サーバ（3 データベース）に統合・SQLite/DuckDB は退役（データは一次移行スクリプトで搬送）
+  change: 検収・支払の状態遷移を仕訳として帳簿に自動反映し、管理会計 DWH の KPI まで 1 本のチェーンで反映。v5 で DB エンジンを実務標準に統一
   delivery_model: single-user-local-web-app
   traceability_rows:
     - {rq: RQ-PURCHASEKAIKEI-001, us: US-PURCHASEKAIKEI-001, ac: AC-US-PURCHASEKAIKEI-001-01, bpmn: BPMN-TASK-001, ct: CT-API-PURCHASEKAIKEI-001, test: TS-INT-PURCHASEKAIKEI-001, task: WI-PURCHASEKAIKEI-002}
@@ -44,6 +46,7 @@ basic_design:
     - {rq: RQ-PURCHASEKAIKEI-002, us: US-PURCHASEKAIKEI-005, ac: AC-US-PURCHASEKAIKEI-006-02, bpmn: BPMN-TASK-008, ct: CT-API-PURCHASEKAIKEI-006, test: TS-INT-PURCHASEKAIKEI-006, task: WI-PURCHASEKAIKEI-005}
     - {rq: RQ-PURCHASEKAIKEI-001, us: US-PURCHASEKAIKEI-006, ac: AC-US-PURCHASEKAIKEI-001-02, bpmn: BPMN-TASK-001, ct: CT-API-PURCHASEKAIKEI-001, test: TS-INT-PURCHASEKAIKEI-001, task: WI-PURCHASEKAIKEI-003}
     - {rq: RQ-PURCHASEKAIKEI-003, us: US-PURCHASEKAIKEI-007, ac: AC-US-PURCHASEKAIKEI-008-01, bpmn: BPMN-TASK-009, ct: CT-API-PURCHASEKAIKEI-008, test: TS-INT-PURCHASEKAIKEI-008, task: 追溯実装（v4・SDD 外）}
+    - {rq: RQ-PURCHASEKAIKEI-004, us: US-PURCHASEKAIKEI-008, ac: AC-US-PURCHASEKAIKEI-009-01, bpmn: BPMN-TASK-001, ct: CT-API-PURCHASEKAIKEI-008, test: TS-INT-PURCHASEKAIKEI-010, task: WI-PURCHASEKAIKEI-011}
 ```
 
 
@@ -52,6 +55,7 @@ basic_design:
 - RQ-PURCHASEKAIKEI-001: 購買管理（purchase-management）と財務会計（kaikei-api）が別々に動いており、検収・支払の実績が帳簿（仕訳）に自動で反映されず、二重入力や記録漏れが起きる。
 - RQ-PURCHASEKAIKEI-002: 購買の状態（検収済み・未払い）と会計帳簿（残高試算表・総勘定元帳）を画面上で突き合わせて確認できない。
 - RQ-PURCHASEKAIKEI-003（v4 追加）: 管理会計（kanri-dwh）の KPI（部門別損益・資金推移）が別アプリに分かれており、経営視点の数字を 1 画面で確認できない（2026-09-11 のユーザー指示で連携対象に変更）。
+- RQ-PURCHASEKAIKEI-004（v5 追加）: システムごとに別 DB（SQLite × 2 + DuckDB）が並び、データ基盤が分かりにくい。研修の同事が使う実務標準 RDBMS（PostgreSQL）に統一したい（2026-09-11 のユーザー指示）。
 
 ## #1 Solution (何を)
 
@@ -62,6 +66,7 @@ basic_design:
 - US-PURCHASEKAIKEI-005: ユーザーとして、科目別の総勘定元帳（内蔵会計エンジンが計算）を画面で照会できる。
 - US-PURCHASEKAIKEI-006: 申請者として、購買申請に部門（D10 営業部 / D20 開発部 / D90 管理部・既定 D90）を付与でき、部門は仕訳の department に引き継がれる。
 - US-PURCHASEKAIKEI-007（v4 追加）: 経営者として、経営ダッシュボード画面で kanri-dwh（管理会計 DWH）の突合状態・部門別損益・月別売上・科目別費用・資金推移を照会でき、「DWH に取込（ETL）」ボタンで kaikei-api 台帳の取込を起動できる。kanri-dwh が無くても購買・会計機能は一切止まらない。
+- US-PURCHASEKAIKEI-008（v5 追加）: ユーザーとして、3 システムの全データが **1 台の PostgreSQL サーバ上の 3 つのデータベース**（purchase / kaikei / kanri）に保存され、psql 等の標準ツールで直接照会できる。既存データは一次移行スクリプトで SQLite/DuckDB から搬送される。DuckDB は退役。
 
 ## bpmn_descriptions
 
@@ -109,6 +114,7 @@ flowchart TD
 - **v3: kaikei-api 連携を Outbox 方式（ミラー送信）で復活。** 内蔵エンジンが常に正本。障害時はキュー保持・自動再送（v4 で 30 秒間隔タイマー追加）。
 - **v4: 永続化を SQLite（node:sqlite・依存追加なし）に移行。** 7 テーブル（purchases / payables / journal_entries + journal_lines / pending_links / counters / meta）を同一トランザクションで書き込む。旧 purchases.json は自動取り込み。
 - **v4: 管理会計（kanri-dwh）と連携する**（2026-09-11 のユーザー指示で対象外から変更）。kanri-dwh 側に POST /api/etl を新設し、purchase-kaikei は KPI/突合のプロキシのみ（集計ロジックは kanri-dwh の責務）。UI は簡約デザイン（深紺 × 金アクセント）。
+- **v5: データ基盤を PostgreSQL に統一する**（2026-09-11 のユーザー決定: 本機インストール / 1 サーバ 3 データベース / DuckDB 退役 / 移行スクリプトで既存データを搬送）。システム境界と突合の意義は維持。Node 側は pg ドライバを追加（express のみ縛りの見直し・ユーザー承認済み）、Python 側は psycopg。接続情報は環境変数管理（コミットしない）。
 - 勘定科目は 11 科目固定マスタ（kaikei-api と同じ体系）。購買側の科目マッピングは固定: 検収 → 仕入高(5110)/買掛金(2110)、支払 → 買掛金(2110)/普通預金(1120)。
 
 ## #5 Change (変える状態)
@@ -116,6 +122,7 @@ flowchart TD
 - 現状: 購買管理は支払予定（payable）まで。会計記録は別アプリ（kaikei-api）に手動入力する世界。
 - 目標: 検収/支払の状態遷移がそのまま正しい仕訳として帳簿に現れ、購買と会計が 1 画面で辿れる。
 - **v4 追加**: ミラー済み仕訳が kanri-dwh の ETL で DuckDB に入り、部門別損益・資金推移の KPI として同じアプリの経営ダッシュボードに戻ってくる（3 システムが 1 本のチェーンに）。
+- **v5 追加**: チェーンを流れるデータの置き場所が PostgreSQL（1 サーバ 3 DB）に統一される。ファイル DB（SQLite/DuckDB）は退役し、標準 SQL ツールで直接照会できるようになる。
 
 ## Traceability Matrix
 
@@ -126,6 +133,7 @@ flowchart TD
 | RQ-PURCHASEKAIKEI-002 | US-PURCHASEKAIKEI-004/005 | AC-006-01 / AC-006-02 | BPMN-TASK-008 | CT-API-006 | TS-INT-006 | WI-005 |
 | RQ-PURCHASEKAIKEI-001 | US-PURCHASEKAIKEI-006 | AC-001-02 | BPMN-TASK-001 | CT-API-001 | TS-INT-001 | WI-003 |
 | RQ-PURCHASEKAIKEI-003 | US-PURCHASEKAIKEI-007 | AC-008-01 / AC-008-02 | BPMN-TASK-009 | CT-API-008 | TS-INT-008/009 | WI-009 |
+| RQ-PURCHASEKAIKEI-004 | US-PURCHASEKAIKEI-008 | AC-009-01 / AC-009-02 | BPMN-TASK-001 | CT-API-008 | TS-INT-010 | WI-010〜014 |
 
 ## Delivery context
 

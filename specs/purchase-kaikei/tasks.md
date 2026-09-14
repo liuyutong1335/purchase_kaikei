@@ -106,3 +106,63 @@ feature_name: "purchase-kaikei"
 3. `stride_drift_detect` で SSoT 整合確認
 4. `stride_evidence_collect` で Evidence Pack 充足確認
 5. `stride_pr_check` で PR_READY 判定
+
+### WI-PURCHASEKAIKEI-010: PostgreSQL 環境セットアップ（v5）
+- mode: confirm
+- complexity: low
+- risk_flags: [environment]
+- spec_refs: [AC-US-PURCHASEKAIKEI-009-01, NFR-PURCHASEKAIKEI-001-05]
+- plan_refs: [CMP-PURCHASEKAIKEI-007]
+- est_lines: 20
+- est_files: 1
+- description: 本機に PostgreSQL をインストール（ユーザー実行・winget）。3 データベース（purchase / kaikei / kanri）を作成。接続情報は .env で管理しコミットしない（.gitignore 済みか確認）
+
+### WI-PURCHASEKAIKEI-011: purchase-kaikei の PostgreSQL 化（v5）
+- mode: confirm
+- complexity: medium
+- risk_flags: [dependency-add]
+- spec_refs: [AC-US-PURCHASEKAIKEI-009-01, NFR-PURCHASEKAIKEI-001-02]
+- plan_refs: [CMP-PURCHASEKAIKEI-007, LIB-PURCHASEKAIKEI-002]
+- est_lines: 220
+- est_files: 2
+- description: store/purchase-store.js — node:sqlite から pg ドライバへ移植（7 テーブル同一構成・同一トランザクション保証を維持）。API は不変。テストはテスト用 DB で実行
+
+### WI-PURCHASEKAIKEI-012: kaikei-api の PostgreSQL 化（v5）
+- mode: confirm
+- complexity: medium
+- risk_flags: [external-repo]
+- spec_refs: [AC-US-PURCHASEKAIKEI-009-01]
+- plan_refs: [CMP-PURCHASEKAIKEI-007]
+- est_lines: 150
+- est_files: 3
+- description: Kaikei-API-Kanri-DWH リポジトリ — SQLite から psycopg（kaikei DB）へ移植。API 契約は不変
+
+### WI-PURCHASEKAIKEI-013: kanri-dwh の PostgreSQL 化（v5・DuckDB 退役）
+- mode: confirm
+- complexity: medium
+- risk_flags: [external-repo]
+- spec_refs: [AC-US-PURCHASEKAIKEI-009-01, AC-US-PURCHASEKAIKEI-008-01]
+- plan_refs: [CMP-PURCHASEKAIKEI-007]
+- est_lines: 250
+- est_files: 5
+- description: db.py / etl.py / queries.py を psycopg + Postgres SQL に移植（星型スキーマはテーブル+ビューで再現・DuckDB 退役）。テスト 12 件の移植
+
+### WI-PURCHASEKAIKEI-014: 一次移行スクリプト（v5）
+- mode: confirm
+- complexity: medium
+- risk_flags: []
+- spec_refs: [AC-US-PURCHASEKAIKEI-009-02]
+- plan_refs: [CMP-PURCHASEKAIKEI-008]
+- est_lines: 160
+- est_files: 1
+- description: scripts/migrate-to-pg.js — 旧 SQLite（purchase-kaikei.db）と DuckDB（kanri.duckdb）のデータを PG の各 DB へ移行。移行後に突合一致を検証
+
+### WI-PURCHASEKAIKEI-015: ドキュメント・運用更新（v5）
+- mode: confirm
+- complexity: low
+- risk_flags: []
+- spec_refs: [NFR-PURCHASEKAIKEI-001-02, NFR-PURCHASEKAIKEI-001-05]
+- plan_refs: [CMP-PURCHASEKAIKEI-007]
+- est_lines: 80
+- est_files: 3
+- description: README（DB 構成節を PG 化）・start.bat（PG 起動確認込み）・state.yaml 更新。run report を Final Gate 証跡として保存
