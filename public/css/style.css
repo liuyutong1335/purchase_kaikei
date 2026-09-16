@@ -596,3 +596,26 @@ th.amount { text-align: right; }
 /* フィルタバーの入力欄は横並び・内容幅に合わせる（グローバルの width:100% を上書き） */
 .filter-bar input, .filter-bar select { width: auto; flex: 0 1 auto; min-width: 0; }
 .filter-bar input#jf-q { flex: 1 1 220px; }
+
+/* ---------- フィルタグリッド（v6: 検索条件の整列） ---------- */
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+.filter-grid .f-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.filter-grid .f-field > label { font-size: 10px; color: var(--muted); }
+.filter-grid .f-field input, .filter-grid .f-field select { width: 100%; }
+.filter-grid .f-span2 { grid-column: span 2; }
+@media (max-width: 860px) { .filter-grid .f-span2 { grid-column: span 1; } }
+.filter-grid .f-range { display: flex; align-items: center; gap: 4px; }
+.filter-grid .f-range input { min-width: 0; flex: 1; }
+.filter-grid .f-range span { color: var(--muted); font-size: 11px; }
+.filter-grid .f-actions { display: flex; gap: 6px; align-items: end; }
+.filter-grid .f-actions .btn { min-width: 68px; }

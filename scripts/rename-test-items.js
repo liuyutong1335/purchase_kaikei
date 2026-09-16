@@ -1,7 +1,6 @@
 'use strict';
 // 一時スクリプト: 英語テストデータの品目名を日本語に修正する（v6 言語統一）
-// 使い方: node scripts/rename-test-items.js  → 実行後サーバーを再起動
-// 接続情報は .env から読む（資格情報をソースに書かない）
+// purchases に加えて payables の品目スナップショットも揃える。実行後サーバーを再起動。
 const fs = require('fs');
 const path = require('path');
 
@@ -26,7 +25,8 @@ const { Client } = require('pg');
   ];
   for (const [id, item] of updates) {
     const r = await c.query('UPDATE purchases SET item = $1 WHERE id = $2', [item, id]);
-    console.log(`${id}: ${r.rowCount} row updated -> ${item}`);
+    const r2 = await c.query('UPDATE payables SET purchase_item = $1 WHERE purchase_id = $2', [item, id]);
+    console.log(`${id}: purchases ${r.rowCount} / payables ${r2.rowCount} rows updated -> ${item}`);
   }
   await c.end();
 })().catch((e) => { console.error('ERR:', e.message); process.exit(1); });

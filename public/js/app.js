@@ -29,6 +29,7 @@ const state = {
   updateTarget: null,
   correctionTarget: null,
   operator: null, // { code, name, role }
+  masters: { vendors: [], items: [] },
   users: [],
   cache: { purchases: [], payables: [] },
 };
@@ -95,6 +96,43 @@ function syncRequesterField() {
   if (field) field.value = state.operator ? state.operator.code : '';
 }
 
+// 申請フォームの仕入先・品目セレクトをマスタから作る（v6 ステップ 8）
+async function initPurchaseFormMasters() {
+  const vendorSel = $('#vendor');
+  const itemSel = $('#item');
+  try {
+    const [vendors, items] = await Promise.all([api('/api/vendors'), api('/api/items')]);
+    state.masters = { vendors, items };
+    if (vendorSel.options.length <= 1) {
+      for (const v of vendors) {
+        const opt = document.createElement('option');
+        opt.value = v.code;
+        opt.textContent = `${v.code} ${v.name}`;
+        vendorSel.appendChild(opt);
+      }
+    }
+    if (itemSel.options.length <= 1) {
+      for (const i of items) {
+        const opt = document.createElement('option');
+        opt.value = i.code;
+        opt.textContent = `${i.code} ${i.name}`;
+        itemSel.appendChild(opt);
+      }
+    }
+  } catch (err) {
+    toast(`マスタの取得に失敗: ${err.message}`, false);
+  }
+}
+
+// 品目を選んだら標準単価を初期値としてセットする
+function onItemChange() {
+  const item = (state.masters.items || []).find((i) => i.code === $('#item').value);
+  if (item && item.unitPrice > 0) {
+    $('#unitPrice').value = item.unitPrice;
+    updateAmountPreview();
+  }
+}
+
 function yen(n) {
   // currency style は環境で全角￥などに揺れるため、半角円記号 + 桁区切りで固定する
   return `¥${Number(n || 0).toLocaleString('ja-JP')}`;
@@ -127,9 +165,11 @@ function showView(name) {
   document.querySelectorAll('.nav button').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('.view').forEach((v) => { v.hidden = v.id !== `view-${name}`; });
   if (name === 'dashboard') renderDashboard();
+  if (name === 'list') { initPurchaseFilters(); renderList(); }
   if (name === 'journal') initJournalView();
   if (name === 'accounting') initAccountingView();
   if (name === 'management') initManagementView();
+  if (name === 'masters') { initPurchaseFilters(); initMastersView(); }
   if (name === 'new') syncRequesterField();
 }
 
@@ -175,11 +215,40 @@ function renderDashboard() {
 
 /* ---------- 一覧 ---------- */
 
-function renderList() {
-  const all = state.cache.purchases;
-  const purchases = state.filter ? all.filter((p) => p.status === state.filter) : all;
+const PURCHASE_FILTER_IDS = ['#pf-q', '#pf-requester', '#pf-department', '#pf-vendor', '#pf-status', '#pf-requested-from', '#pf-requested-to', '#pf-order-from', '#pf-order-to', '#pf-receive-from', '#pf-receive-to', '#pf-scheduled-from', '#pf-scheduled-to'];
 
-  renderFilters(all);
+function purchaseFilterQuery() {
+  const qs = new URLSearchParams();
+  const val = (sel) => $(sel).value.trim();
+  if (val('#pf-q')) qs.set('q', val('#pf-q'));
+  if (val('#pf-requester')) qs.set('requester', val('#pf-requester'));
+  if (val('#pf-department')) qs.set('department', val('#pf-department'));
+  if (val('#pf-vendor')) qs.set('vendor', val('#pf-vendor'));
+  if (val('#pf-status')) qs.set('status', val('#pf-status'));
+  if (val('#pf-requested-from')) qs.set('requestedFrom', val('#pf-requested-from'));
+  if (val('#pf-requested-to')) qs.set('requestedTo', val('#pf-requested-to'));
+  if (val('#pf-order-from')) qs.set('orderFrom', val('#pf-order-from'));
+  if (val('#pf-order-to')) qs.set('orderTo', val('#pf-order-to'));
+  if (val('#pf-receive-from')) qs.set('receiveFrom', val('#pf-receive-from'));
+  if (val('#pf-receive-to')) qs.set('receiveTo', val('#pf-receive-to'));
+  if (val('#pf-scheduled-from')) qs.set('scheduledFrom', val('#pf-scheduled-from'));
+  if (val('#pf-scheduled-to')) qs.set('scheduledTo', val('#pf-scheduled-to'));
+  return qs.toString();
+}
+
+async function renderList() {
+  // 複合検索はサーバー側で行う（state.cache はダッシュボード用に全件を保持したまま）
+  const qs = purchaseFilterQuery();
+  if (state.filter) qs.set('status', state.filter);
+  let purchases;
+  try {
+    purchases = await api(`/api/purchases${qs ? `?${qs}` : ''}`);
+  } catch (err) {
+    toast(`一覧の取得に失敗: ${err.message}`, false);
+    return;
+  }
+
+  renderFilters(purchases);
   const tbody = $('#purchase-table tbody');
   tbody.innerHTML = '';
   $('#list-empty').hidden = purchases.length > 0;
@@ -193,8 +262,12 @@ function renderList() {
       <td class="amount">${yen(p.amount)}</td>
       <td title="${userName(p.requester)}"><span class="cell-ellipsis">${userName(p.requester)}</span></td>
       <td>${DEPARTMENT_LABELS[p.department] || p.department}</td>
+      <td title="${p.vendorName || ''}"><span class="cell-ellipsis">${p.vendorCode ? `${p.vendorCode} ${p.vendorName || ''}` : '—'}</span></td>
       <td><span class="badge ${p.status}">${STATUS_LABELS[p.status]}</span></td>
-      <td>${p.receivedTotal}/${p.qty}</td>
+      <td>${p.requestedDate || '—'}</td>
+      <td>${p.orderDate || '—'}</td>
+      <td>${p.receiveDate || '—'}</td>
+      <td>${p.scheduledDate || '—'}</td>
       <td>${p.orderNo || '—'}</td>
       <td><button class="detail-btn" data-id="${p.id}">詳細</button></td>
     `;
@@ -236,11 +309,13 @@ function renderPayables() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${x.id}</td>
-      <td>${x.purchaseId}</td>
+      <td>${x.orderNo || '—'}</td>
+      <td>${x.vendorCode || '—'}</td>
+      <td>${x.vendorName || '—'}</td>
       <td title="${x.purchaseItem}"><span class="cell-ellipsis">${x.purchaseItem}</span></td>
-      <td>${x.receivedQty}</td>
-      <td class="amount">${yen(x.amount)}</td>
+      <td>${x.receivedDate || '—'}</td>
       <td>${x.scheduledDate}</td>
+      <td class="amount">${yen(x.amount)}</td>
       <td><span class="badge ${x.status}">${PAYABLE_STATUS_LABELS[x.status]}</span></td>
       <td>${x.status === 'scheduled' ? `<button class="pay-btn" data-id="${x.id}">支払済みにする</button>` : (x.entryId ? `仕訳 #${x.entryId}` : '')}</td>
     `;
@@ -378,6 +453,66 @@ function journalLinkHtml(p) {
   ).join(' ');
 }
 
+/* ---------- マスタ管理（v6 ステップ 8） ---------- */
+
+const DEPT_MASTER = [
+  { code: 'D10', name: '営業部' },
+  { code: 'D20', name: '開発部' },
+  { code: 'D90', name: '管理部（共通）' },
+];
+
+function fillSimpleTable(tbodySel, rows, html) {
+  const tbody = $(tbodySel);
+  tbody.innerHTML = '';
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = html(r);
+    tbody.appendChild(tr);
+  }
+}
+
+async function initMastersView() {
+  try {
+    const [vendors, items, accounts] = await Promise.all([
+      api('/api/vendors'), api('/api/items'), api('/api/accounting/accounts'),
+    ]);
+    state.masters = { vendors, items };
+    fillSimpleTable('#vendor-table tbody', vendors, (v) => `<td>${v.code}</td><td>${v.name}</td>`);
+    fillSimpleTable('#item-table tbody', items, (i) => `<td>${i.code}</td><td>${i.name}</td><td class="amount">${yen(i.unitPrice)}</td>`);
+    fillSimpleTable('#master-account-table tbody', accounts, (a) => `<td>${a.code}</td><td>${a.name}</td><td>${a.category}</td>`);
+  } catch (err) {
+    toast(`マスタの取得に失敗: ${err.message}`, false);
+  }
+  fillSimpleTable('#master-user-table tbody', state.users.length > 0 ? state.users : (state.operator ? [state.operator] : []),
+    (u) => `<td>${u.code}</td><td>${u.name ? `${u.name} / ` : ''}${ROLE_LABELS[u.role] || u.role}</td>`);
+  fillSimpleTable('#master-dept-table tbody', DEPT_MASTER, (d) => `<td>${d.code}</td><td>${d.name}</td>`);
+}
+
+$('#vendor-add').addEventListener('click', async () => {
+  const name = $('#vendor-name').value.trim();
+  if (!name) { toast('仕入先名を入力してください', false); return; }
+  try {
+    const v = await api('/api/vendors', { method: 'POST', body: JSON.stringify({ name }) });
+    $('#vendor-name').value = '';
+    toast(`仕入先を登録しました（${v.code}）`, true);
+    await initMastersView();
+    await initPurchaseFormMasters();
+  } catch (err) { toast(`エラー: ${err.message}`, false); }
+});
+
+$('#item-add').addEventListener('click', async () => {
+  const name = $('#item-name').value.trim();
+  const unitPrice = Number($('#item-price').value);
+  if (!name) { toast('品目名を入力してください', false); return; }
+  try {
+    const i = await api('/api/items', { method: 'POST', body: JSON.stringify({ name, unitPrice }) });
+    $('#item-name').value = '';
+    toast(`品目を登録しました（${i.code}）`, true);
+    await initMastersView();
+    await initPurchaseFormMasters();
+  } catch (err) { toast(`エラー: ${err.message}`, false); }
+});
+
 /* ---------- データ読み込み ---------- */
 
 async function refreshAll() {
@@ -424,6 +559,7 @@ async function showDetail(id) {
     <div><div class="item-label">金額</div>${yen(p.amount)}</div>
     <div><div class="item-label">申請者</div>${userName(p.requester)}</div>
     <div><div class="item-label">部門</div>${DEPARTMENT_LABELS[p.department] || p.department}</div>
+    <div><div class="item-label">仕入先</div>${p.vendorCode ? `${p.vendorCode} ${p.vendorName || ''}` : '—'}</div>
     <div><div class="item-label">状態</div><span class="badge ${p.status}">${STATUS_LABELS[p.status]}</span></div>
     <div><div class="item-label">検収進捗</div>${p.receivedTotal}/${p.qty}</div>
     <div><div class="item-label">発注番号</div>${p.orderNo || '—'}</div>
@@ -749,11 +885,14 @@ $('#purchase-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = e.target;
   try {
+    const itemMaster = (state.masters.items || []).find((i) => i.code === form.item.value);
     const created = await api('/api/purchases', {
       method: 'POST',
       body: JSON.stringify({
         requester: currentActor(), // v6 ステップ 1: 申請者は常に現在の操作者
-        item: form.item.value,
+        item: itemMaster ? itemMaster.name : form.item.value, // マスタ名を使用（表記揺れ防止）
+        vendorCode: form.vendor.value,
+        itemCode: form.item.value,
         qty: Number(form.qty.value),
         unitPrice: Number(form.unitPrice.value),
         department: form.department.value,
@@ -771,6 +910,8 @@ $('#purchase-form').addEventListener('submit', async (e) => {
     toast(`登録エラー: ${err.message}`, false);
   }
 });
+
+$('#item').addEventListener('change', onItemChange);
 
 /* ---------- 会計ビュー ---------- */
 
@@ -1109,9 +1250,56 @@ $('#detail-close').addEventListener('click', () => {
   state.selectedId = null;
 });
 
+/* ---------- 申請一覧の複合検索（v6 ステップ 6） ---------- */
+
+function initPurchaseFilters() {
+  // 申請者（ユーザーマスタ）と状態の選択肢を一度だけ作る
+  const req = $('#pf-requester');
+  if (req.options.length <= 1) {
+    for (const u of state.users) {
+      const opt = document.createElement('option');
+      opt.value = u.code;
+      opt.textContent = `${u.code} / ${ROLE_LABELS[u.role] || u.role}`;
+      req.appendChild(opt);
+    }
+  }
+  const ven = $('#pf-vendor');
+  if (ven.options.length <= 1) {
+    for (const v of state.masters.vendors || []) {
+      const opt = document.createElement('option');
+      opt.value = v.code;
+      opt.textContent = `${v.code} ${v.name}`;
+      ven.appendChild(opt);
+    }
+  }
+  const st = $('#pf-status');
+  if (st.options.length <= 1) {
+    for (const [key, label] of Object.entries(STATUS_LABELS)) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = `状態: ${label}`;
+      st.appendChild(opt);
+    }
+  }
+}
+
+$('#pf-refresh').addEventListener('click', renderList);
+$('#pf-reset').addEventListener('click', () => {
+  for (const id of PURCHASE_FILTER_IDS) $(id).value = '';
+  state.filter = '';
+  renderList();
+});
+for (const id of PURCHASE_FILTER_IDS) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') renderList(); });
+}
+
 /* ---------- 仕訳一覧のイベント（v6 ステップ 4） ---------- */
 
 $('#jf-refresh').addEventListener('click', renderJournal);
+$('#jf-reset').addEventListener('click', () => {
+  for (const id of JOURNAL_FILTER_IDS) $(id).value = '';
+  renderJournal();
+});
 for (const id of JOURNAL_FILTER_IDS) {
   $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') renderJournal(); });
 }
@@ -1139,4 +1327,5 @@ document.addEventListener('click', async (e) => {
 
 refreshAll();
 initOperator();
+initPurchaseFormMasters();
 initAccountingView();

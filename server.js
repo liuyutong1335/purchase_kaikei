@@ -40,14 +40,54 @@ function createApp(store, kanri) {
     }
   });
 
-  // CT-API-PURCHASEKAIKEI-001: 一覧（状態フィルタ可）
+  // CT-API-PURCHASEKAIKEI-001: 一覧（v6 ステップ 6: 複合検索）
   app.get('/api/purchases', (req, res) => {
-    res.json(store.list(req.query.status));
+    res.json(store.listPurchases({
+      q: req.query.q,
+      requester: req.query.requester,
+      department: req.query.department,
+      vendor: req.query.vendor,
+      item: req.query.item,
+      status: req.query.status,
+      requestedFrom: req.query.requestedFrom,
+      requestedTo: req.query.requestedTo,
+      orderFrom: req.query.orderFrom,
+      orderTo: req.query.orderTo,
+      receiveFrom: req.query.receiveFrom,
+      receiveTo: req.query.receiveTo,
+      scheduledFrom: req.query.scheduledFrom,
+      scheduledTo: req.query.scheduledTo,
+    }));
   });
 
   // v6 ステップ 1: ユーザーマスタ（操作者切替用）
   app.get('/api/users', (req, res) => {
     res.json(store.listUsers());
+  });
+
+  // v6 ステップ 8: 仕入先・品目マスタ（一覧 + 追加）
+  app.get('/api/vendors', (req, res) => {
+    res.json(store.listVendors());
+  });
+
+  app.post('/api/vendors', async (req, res) => {
+    try {
+      res.status(201).json(await store.addVendor(req.body || {}));
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
+  app.get('/api/items', (req, res) => {
+    res.json(store.listItems());
+  });
+
+  app.post('/api/items', async (req, res) => {
+    try {
+      res.status(201).json(await store.addItem(req.body || {}));
+    } catch (err) {
+      handleError(err, res);
+    }
   });
 
   // CT-API-PURCHASEKAIKEI-001: 詳細（履歴・仕訳参照含む）

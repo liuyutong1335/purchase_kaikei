@@ -103,6 +103,41 @@ test('approve: 申請者本人は自分の申請を承認できない（SelfAppr
   assert.equal(store.get(p.id).status, 'approved');
 });
 
+// v6 ステップ 8: マスタ管理（仕入先・品目）
+test('masters: 仕入先・品目がシードされ、追加できる（コード自動採番・重複不可）', async () => {
+  const store = await freshStore();
+  assert.equal(store.listVendors().length, 3);
+  assert.equal(store.listItems().length, 5);
+
+  // 追加（コード自動採番）
+  const v = await store.addVendor({ name: '株式会社ガンマ' });
+  assert.equal(v.code, 'V004');
+  const i = await store.addItem({ name: 'シュレッダー', unitPrice: 15000 });
+  assert.equal(i.code, 'I006');
+
+  // 重複コードは不可・名前必須
+  await assert.rejects(() => store.addVendor({ code: 'V004', name: 'x' }), ValidationError);
+  await assert.rejects(() => store.addVendor({ name: '' }), ValidationError);
+  await assert.rejects(() => store.addItem({ name: 'x', unitPrice: -1 }), ValidationError);
+
+  // 再起動（hydrate）してもマスタは消えない
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-store-'));
+  const s2 = await PurchaseStore.create(dir, stubKaikei());
+  assert.equal(s2.listVendors().length, 4);
+  assert.equal(s2.listItems().length, 6);
+});
+
+test('create: 仕入先・品目はマスタのコードで受け、存在しないコードは拒否', async () => {
+  const store = await freshStore();
+  assert.throws(() => store.create({ item: 'x', qty: 1, unitPrice: 100, requester: 'u01', vendorCode: 'V999' }), ValidationError);
+  const p = await store.create({ item: 'ノートPC', qty: 1, unitPrice: 120000, requester: 'u01', vendorCode: 'V001', itemCode: 'I003' });
+  assert.equal(p.vendorCode, 'V001');
+  assert.equal(p.itemCode, 'I003');
+  const enriched = store.listPurchases({ vendor: 'V001' });
+  assert.equal(enriched.length, 1);
+  assert.equal(enriched[0].vendorName, 'オフィスワン商事');
+});
+
 // v6 ステップ 4: 仕訳一覧（元伝票・申請番号・計上者・API 連携状態）
 test('listEntries: 検収・支払の仕訳がメタデータ付きで一覧でき、条件検索できる', async () => {
   const store = await freshStore();
@@ -210,6 +245,32 @@ test('update: 理由必須・変更なしは不可', async () => {
   await assert.rejects(() => store.update(p.id, 'u01', { qty: 2 }, ''), ValidationError); // 理由必須
   await assert.rejects(() => store.update(p.id, 'u01', { note: '' }, '備考だけ変更')); // 変更なし
   await assert.rejects(() => store.update(p.id, 'u01', { qty: 0 }, '理由'), ValidationError); // 不正値
+});
+
+// v6 ステップ 6: 購買一覧の複合検索（申請日・発注日・検収日・支払予定日の派生付き）
+test('listPurchases: 複合条件で検索でき、派生日付が付く', async () => {
+  const store = await freshStore();
+  const p1 = await store.create({ item: 'ノートPC', qty: 1, unitPrice: 100000, requester: 'u01', department: 'D10' });
+  await store.approve(p1.id, 'u02', '');
+  await store.order(p1.id, 'u03');
+  const { payable } = await store.receive(p1.id, 'u03', 1, '2026-09-10');
+  const p2 = await store.create({ item: 'マウス', qty: 5, unitPrice: 500, requester: 'u01', department: 'D20' });
+
+  // 派生日付: 申請日・発注日・検収日・支払予定日
+  const enriched = store.listPurchases().find((x) => x.id === p1.id);
+  const today = new Date().toISOString().slice(0, 10);
+  assert.equal(enriched.orderDate, today);
+  assert.equal(enriched.receiveDate, '2026-09-10');
+  assert.equal(enriched.scheduledDate, payable.scheduledDate);
+  assert.ok(enriched.requestedDate <= today);
+
+  // 条件: 品目・部門・申請者・キーワード・支払予定日
+  assert.equal(store.listPurchases({ item: 'ノート' }).length, 1);
+  assert.equal(store.listPurchases({ department: 'D20' }).length, 1);
+  assert.equal(store.listPurchases({ department: 'D10' }).length, 1);
+  assert.equal(store.listPurchases({ q: 'PO-' }).length, 1); // 発注番号
+  assert.equal(store.listPurchases({ scheduledFrom: payable.scheduledDate, scheduledTo: payable.scheduledDate }).length, 1);
+  assert.equal(store.listPurchases({ scheduledFrom: '2099-01-01' }).length, 0);
 });
 
 // v6 ステップ 5: 訂正申請 → 承認 → 取消仕訳 → 訂正仕訳で再計上
