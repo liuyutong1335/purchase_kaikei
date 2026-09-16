@@ -514,6 +514,20 @@ $('#item-add').addEventListener('click', async () => {
   } catch (err) { toast(`エラー: ${err.message}`, false); }
 });
 
+// マスタ横断のキーワード絞り込み（コード・名称が部分一致する行だけ残す）
+function applyMasterFilter() {
+  const q = ($('#master-filter').value || '').trim().toLowerCase();
+  for (const tr of document.querySelectorAll('#view-masters table tbody tr')) {
+    tr.hidden = q !== '' && !tr.textContent.toLowerCase().includes(q);
+  }
+}
+
+$('#master-filter').addEventListener('input', applyMasterFilter);
+$('#master-filter-reset').addEventListener('click', () => {
+  $('#master-filter').value = '';
+  applyMasterFilter();
+});
+
 /* ---------- データ読み込み ---------- */
 
 async function refreshAll() {
