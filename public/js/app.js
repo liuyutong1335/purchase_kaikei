@@ -473,7 +473,7 @@ function fillSimpleTable(tbodySel, rows, html) {
 
 async function initMastersView() {
   try {
-    const [vendors, items, accounts] = await Promise.all([
+    const [vendors, items, { accounts }] = await Promise.all([
       api('/api/vendors'), api('/api/items'), api('/api/accounting/accounts'),
     ]);
     state.masters = { vendors, items };
@@ -483,8 +483,9 @@ async function initMastersView() {
   } catch (err) {
     toast(`マスタの取得に失敗: ${err.message}`, false);
   }
+  // 名前は画面に出さない（操作者切替と同じ方針。コード + ロールで見せる）
   fillSimpleTable('#master-user-table tbody', state.users.length > 0 ? state.users : (state.operator ? [state.operator] : []),
-    (u) => `<td>${u.code}</td><td>${u.name ? `${u.name} / ` : ''}${ROLE_LABELS[u.role] || u.role}</td>`);
+    (u) => `<td>${u.code}</td><td>${ROLE_LABELS[u.role] || u.role}</td>`);
   fillSimpleTable('#master-dept-table tbody', DEPT_MASTER, (d) => `<td>${d.code}</td><td>${d.name}</td>`);
 }
 

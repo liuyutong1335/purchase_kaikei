@@ -145,6 +145,18 @@ main {
   .two-col { grid-template-columns: 1fr; }
 }
 
+/* マスタ管理（v6 ステップ 8）— 詳細画面の two-col とは別に等幅グリッドで整列 */
+.masters-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .masters-grid { grid-template-columns: 1fr; }
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);

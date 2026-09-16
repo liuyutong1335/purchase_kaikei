@@ -278,65 +278,63 @@
 
       <!-- マスタ管理（v6 ステップ 8） -->
       <section class="view" id="view-masters" hidden>
-        <div class="two-col">
-          <div>
-            <div class="panel">
-              <h2>仕入先マスタ</h2>
-              <div class="table-wrap">
-                <table id="vendor-table">
-                  <thead><tr><th>コード</th><th>仕入先名</th></tr></thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-              <div class="field-row" style="margin-top:8px">
-                <div class="field"><label>仕入先名</label><input id="vendor-name" type="text" placeholder="例: オフィスワン商事" /></div>
-                <div class="f-actions"><button class="btn primary" id="vendor-add">追加</button></div>
-              </div>
+        <div class="masters-grid">
+          <div class="panel">
+            <h2>仕入先マスタ</h2>
+            <div class="table-wrap">
+              <table id="vendor-table">
+                <thead><tr><th>コード</th><th>仕入先名</th></tr></thead>
+                <tbody></tbody>
+              </table>
             </div>
-
-            <div class="panel">
-              <h2>品目マスタ</h2>
-              <div class="table-wrap">
-                <table id="item-table">
-                  <thead><tr><th>コード</th><th>品目名</th><th>標準単価</th></tr></thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-              <div class="field-row" style="margin-top:8px">
-                <div class="field"><label>品目名</label><input id="item-name" type="text" placeholder="例: シュレッダー" /></div>
-                <div class="field"><label>標準単価 (円)</label><input id="item-price" type="number" min="0" step="1" value="0" /></div>
-                <div class="f-actions"><button class="btn primary" id="item-add">追加</button></div>
-              </div>
+            <div class="field-row" style="margin-top:8px">
+              <div class="field"><label>仕入先名</label><input id="vendor-name" type="text" placeholder="例: オフィスワン商事" /></div>
+              <div class="f-actions"><button class="btn primary" id="vendor-add">追加</button></div>
             </div>
           </div>
 
-          <div>
-            <div class="panel">
-              <h2>ユーザーマスタ <span class="hint">操作者・ロール</span></h2>
-              <div class="table-wrap">
-                <table id="master-user-table">
-                  <thead><tr><th>コード</th><th>ロール</th></tr></thead>
-                  <tbody></tbody>
-                </table>
-              </div>
+          <div class="panel">
+            <h2>ユーザーマスタ <span class="hint">操作者・ロール（名前は非表示）</span></h2>
+            <div class="table-wrap">
+              <table id="master-user-table">
+                <thead><tr><th>コード</th><th>ロール</th></tr></thead>
+                <tbody></tbody>
+              </table>
             </div>
-            <div class="panel">
-              <h2>部門マスタ</h2>
-              <div class="table-wrap">
-                <table id="master-dept-table">
-                  <thead><tr><th>コード</th><th>部門名</th></tr></thead>
-                  <tbody></tbody>
-                </table>
-              </div>
+          </div>
+
+          <div class="panel">
+            <h2>品目マスタ</h2>
+            <div class="table-wrap">
+              <table id="item-table">
+                <thead><tr><th>コード</th><th>品目名</th><th>標準単価</th></tr></thead>
+                <tbody></tbody>
+              </table>
             </div>
-            <div class="panel">
-              <h2>勘定科目マスタ <span class="hint">真源は kaikei DB（API 同期）</span></h2>
-              <div class="table-wrap">
-                <table id="master-account-table">
-                  <thead><tr><th>コード</th><th>科目名</th><th>分類</th></tr></thead>
-                  <tbody></tbody>
-                </table>
-              </div>
+            <div class="field-row" style="margin-top:8px">
+              <div class="field"><label>品目名</label><input id="item-name" type="text" placeholder="例: シュレッダー" /></div>
+              <div class="field"><label>標準単価 (円)</label><input id="item-price" type="number" min="0" step="1" value="0" /></div>
+              <div class="f-actions"><button class="btn primary" id="item-add">追加</button></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>部門マスタ</h2>
+            <div class="table-wrap">
+              <table id="master-dept-table">
+                <thead><tr><th>コード</th><th>部門名</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>勘定科目マスタ <span class="hint">マスタは kaikei DB（API 同期）</span></h2>
+            <div class="table-wrap">
+              <table id="master-account-table">
+                <thead><tr><th>コード</th><th>科目名</th><th>分類</th></tr></thead>
+                <tbody></tbody>
+              </table>
             </div>
           </div>
         </div>
